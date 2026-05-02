@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Guitar Shop — Browser-based guitar effects pedal and amp emulator. Real-time audio processing with Web Audio API.">
+  <title>Guitar Shop — Effects Pedal & Amp Emulator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ═══ HEADER ═══ -->
+  <header class="header">
+    <div class="header-brand">
+      <span class="logo">Guitar Shop</span>
+      <span class="tagline">Effects &amp; Amp Emulator</span>
+    </div>
+    <div class="header-controls">
+      <div class="device-selector">
+        <label for="device-select">Input</label>
+        <select id="device-select">
+          <option value="">— Select audio input —</option>
+        </select>
+      </div>
+      <button id="tuner-btn" class="btn btn-tuner">🎵 Tuner</button>
+      <button id="start-btn" class="btn btn-primary">▶ START</button>
+      <div class="status-indicator">
+        <div id="status-dot" class="status-dot"></div>
+        <span id="status-text" class="status-text">Stopped</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══ MAIN ═══ -->
+  <main class="main-content">
+
+    <!-- Tuner Display -->
+    <div id="tuner-display" class="tuner-display">
+      <div class="tuner-gauge">
+        <div id="tuner-needle" class="tuner-needle"></div>
+      </div>
+      <div class="tuner-info">
+        <span id="tuner-note" class="tuner-note">—</span>
+        <span id="tuner-cents" class="tuner-cents">0¢</span>
+        <span id="tuner-freq" class="tuner-freq">— Hz</span>
+      </div>
+    </div>
+
+    <!-- Preset Bar -->
+    <div class="preset-bar">
+      <label for="preset-select">Preset</label>
+      <select id="preset-select"></select>
+      <button id="preset-save" class="btn">💾 Save</button>
+      <button id="preset-delete" class="btn">🗑 Delete</button>
+    </div>
+
+    <!-- Master Controls -->
+    <div class="master-controls">
+      <div class="knob-wrapper">
+        <div id="input-gain" class="knob" data-value="0.5">
+          <div class="knob-indicator"></div>
+        </div>
+        <span class="knob-label">Input</span>
+        <span class="knob-value">5</span>
+      </div>
+      <div class="knob-wrapper">
+        <div id="master-volume" class="knob" data-value="0.8">
+          <div class="knob-indicator"></div>
+        </div>
+        <span class="knob-label">Master</span>
+        <span class="knob-value">8</span>
+      </div>
+    </div>
+
+    <!-- ═══ PEDALBOARD ═══ -->
+    <section class="pedalboard">
+      <h2 class="section-title">Pedalboard</h2>
+      <div class="pedals-grid">
+
+        <!-- Noise Gate -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Gate</span>
+            <div id="noisegate-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="noisegate-threshold" class="knob" data-value="0.25">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Thresh</span>
+              <span class="knob-value">3</span>
+            </div>
+          </div>
+          <button id="noisegate-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+        <!-- Compressor -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Compressor</span>
+            <div id="compressor-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="compressor-threshold" class="knob" data-value="0.6">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Thresh</span>
+              <span class="knob-value">6</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="compressor-ratio" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Ratio</span>
+              <span class="knob-value">3</span>
+            </div>
+          </div>
+          <button id="compressor-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+        <!-- Overdrive -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Overdrive</span>
+            <div id="overdrive-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="overdrive-drive" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Drive</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="overdrive-tone" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Tone</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="overdrive-level" class="knob" data-value="0.7">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Level</span>
+              <span class="knob-value">7</span>
+            </div>
+          </div>
+          <button id="overdrive-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+        <!-- Distortion -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Distortion</span>
+            <div id="distortion-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="distortion-gain" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Gain</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="distortion-tone" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Tone</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="distortion-level" class="knob" data-value="0.6">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Level</span>
+              <span class="knob-value">6</span>
+            </div>
+          </div>
+          <button id="distortion-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+        <!-- Chorus -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Chorus</span>
+            <div id="chorus-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="chorus-rate" class="knob" data-value="0.15">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Rate</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="chorus-depth" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Depth</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="chorus-mix" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="chorus-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+        <!-- Delay -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Delay</span>
+            <div id="delay-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="delay-time" class="knob" data-value="0.2">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Time</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="delay-feedback" class="knob" data-value="0.4">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-value">4</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="delay-mix" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">3</span>
+            </div>
+          </div>
+          <button id="delay-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+        <!-- Reverb -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Reverb</span>
+            <div id="reverb-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="reverb-decay" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Decay</span>
+              <span class="knob-value">3</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="reverb-mix" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">3</span>
+            </div>
+          </div>
+          <button id="reverb-bypass" class="bypass-btn">Bypass</button>
+          <button id="reverb-load-ir" class="ir-btn">📂 Load IR File</button>
+        </div>
+
+        <!-- EQ -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">EQ</span>
+            <div id="eq-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="eq-bass" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Bass</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="eq-mid" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mid</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="eq-treble" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Treble</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="eq-bypass" class="bypass-btn">Bypass</button>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ═══ AMP ═══ -->
+    <section class="amp-section">
+      <h2 class="section-title">Amplifier</h2>
+      <div class="amp-panel">
+        <div class="amp-header">
+          <span class="amp-title">Amplifier</span>
+          <div class="amp-model-selector">
+            <label for="amp-model">Model</label>
+            <select id="amp-model">
+              <option value="clean">Clean</option>
+              <option value="crunch">Crunch</option>
+              <option value="highgain">High Gain</option>
+            </select>
+          </div>
+        </div>
+        <div class="amp-knobs">
+          <div class="amp-knob-wrapper">
+            <div id="amp-gain" class="knob" data-value="0.3">
+              <div class="knob-indicator"></div>
+            </div>
+            <span class="knob-label">Gain</span>
+            <span class="knob-value">3</span>
+          </div>
+          <div class="amp-knob-wrapper">
+            <div id="amp-bass" class="knob" data-value="0.5">
+              <div class="knob-indicator"></div>
+            </div>
+            <span class="knob-label">Bass</span>
+            <span class="knob-value">5</span>
+          </div>
+          <div class="amp-knob-wrapper">
+            <div id="amp-mid" class="knob" data-value="0.5">
+              <div class="knob-indicator"></div>
+            </div>
+            <span class="knob-label">Mid</span>
+            <span class="knob-value">5</span>
+          </div>
+          <div class="amp-knob-wrapper">
+            <div id="amp-treble" class="knob" data-value="0.5">
+              <div class="knob-indicator"></div>
+            </div>
+            <span class="knob-label">Treble</span>
+            <span class="knob-value">5</span>
+          </div>
+          <div class="amp-knob-wrapper">
+            <div id="amp-presence" class="knob" data-value="0.5">
+              <div class="knob-indicator"></div>
+            </div>
+            <span class="knob-label">Presence</span>
+            <span class="knob-value">5</span>
+          </div>
+          <div class="amp-knob-wrapper">
+            <div id="amp-master" class="knob" data-value="0.7">
+              <div class="knob-indicator"></div>
+            </div>
+            <span class="knob-label">Master</span>
+            <span class="knob-value">7</span>
+          </div>
+        </div>
+        <div class="amp-cab-section">
+          <span class="knob-label">Cabinet IR</span>
+          <button id="cab-load-ir" class="ir-btn" style="width: auto; margin-top: 0; padding: 6px 16px;">📂 Load Cabinet IR</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ VISUALIZER ═══ -->
+    <section class="visualizer-section">
+      <div class="visualizer-panel">
+        <div class="visualizer-header">
+          <span class="section-title">Signal Monitor</span>
+          <select id="viz-mode">
+            <option value="both">Waveform + Spectrum</option>
+            <option value="waveform">Waveform</option>
+            <option value="spectrum">Spectrum</option>
+          </select>
+        </div>
+        <div class="visualizer-canvas-wrapper">
+          <canvas id="visualizer-canvas"></canvas>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <p>Guitar Shop — Built with Web Audio API</p>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
