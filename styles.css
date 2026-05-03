@@ -220,6 +220,17 @@ body::before {
   font-weight: 500;
 }
 
+/* ─── Bridge Status ─── */
+.bridge-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
 /* ─── Tuner Button ─── */
 .btn-tuner {
   background: var(--bg-panel);
@@ -793,4 +804,41 @@ body::before {
     flex-wrap: wrap;
     justify-content: center;
   }
+}
+
+/* ─── Pedal Preset Controls ─── */
+.pedal-preset-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pedal-preset-select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif;
+  font-size: 9px;
+  cursor: pointer;
+  max-width: 70px;
+}
+
+.pedal-preset-select:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.pedal-preset-save {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.pedal-preset-save:hover {
+  transform: scale(1.2);
 }

@@ -16,10 +16,21 @@
       <span class="tagline">Effects &amp; Amp Emulator</span>
     </div>
     <div class="header-controls">
+      <div class="bridge-status">
+        <div id="bridge-dot" class="status-dot"></div>
+        <span id="bridge-text" class="status-text">Checking bridge…</span>
+      </div>
       <div class="device-selector">
         <label for="device-select">Input</label>
         <select id="device-select">
           <option value="">— Select audio input —</option>
+        </select>
+      </div>
+      <div class="device-selector">
+        <label for="channel-select">Channel</label>
+        <select id="channel-select">
+          <option value="0">Channel 1</option>
+          <option value="1">Channel 2</option>
         </select>
       </div>
       <button id="tuner-btn" class="btn btn-tuner">🎵 Tuner</button>
@@ -81,6 +92,10 @@
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Gate</span>
+            <div class="pedal-preset-controls">
+              <select id="noisegate-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="noisegate-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="noisegate-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -92,13 +107,17 @@
               <span class="knob-value">3</span>
             </div>
           </div>
-          <button id="noisegate-bypass" class="bypass-btn">Bypass</button>
+          <button id="noisegate-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- Compressor -->
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Compressor</span>
+            <div class="pedal-preset-controls">
+              <select id="compressor-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="compressor-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="compressor-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -117,13 +136,82 @@
               <span class="knob-value">3</span>
             </div>
           </div>
-          <button id="compressor-bypass" class="bypass-btn">Bypass</button>
+          <button id="compressor-bypass" class="bypass-btn">On/Off</button>
         </div>
 
+
+        <!-- Envelope Filter -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Envelope Filter</span>
+            <div class="pedal-preset-controls">
+              <select id="envelopefilter-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="envelopefilter-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
+            <div id="envelopefilter-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="envelopefilter-sensitivity" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Sens</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="envelopefilter-q" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Q</span>
+              <span class="knob-value">3</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="envelopefilter-mix" class="knob" data-value="1.0">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">10</span>
+            </div>
+          </div>
+          <button id="envelopefilter-bypass" class="bypass-btn">On/Off</button>
+        </div>
+
+        <!-- Boost -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Boost</span>
+            <div class="pedal-preset-controls">
+              <select id="boost-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="boost-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
+            <div id="boost-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="boost-gain" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Gain</span>
+              <span class="knob-value">3</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="boost-tone" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Tone</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="boost-bypass" class="bypass-btn">On/Off</button>
+        </div>
         <!-- Overdrive -->
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Overdrive</span>
+            <div class="pedal-preset-controls">
+              <select id="overdrive-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="overdrive-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="overdrive-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -149,13 +237,17 @@
               <span class="knob-value">7</span>
             </div>
           </div>
-          <button id="overdrive-bypass" class="bypass-btn">Bypass</button>
+          <button id="overdrive-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- Distortion -->
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Distortion</span>
+            <div class="pedal-preset-controls">
+              <select id="distortion-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="distortion-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="distortion-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -181,13 +273,103 @@
               <span class="knob-value">6</span>
             </div>
           </div>
-          <button id="distortion-bypass" class="bypass-btn">Bypass</button>
+          <button id="distortion-bypass" class="bypass-btn">On/Off</button>
         </div>
 
+
+        <!-- Phaser -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Phaser</span>
+            <div class="pedal-preset-controls">
+              <select id="phaser-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="phaser-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
+            <div id="phaser-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="phaser-rate" class="knob" data-value="0.15">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Rate</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="phaser-depth" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Depth</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="phaser-feedback" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="phaser-mix" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="phaser-bypass" class="bypass-btn">On/Off</button>
+        </div>
+
+        <!-- Flanger -->
+        <div class="pedal">
+          <div class="pedal-header">
+            <span class="pedal-name">Flanger</span>
+            <div class="pedal-preset-controls">
+              <select id="flanger-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="flanger-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
+            <div id="flanger-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="flanger-rate" class="knob" data-value="0.2">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Rate</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="flanger-depth" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Depth</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="flanger-feedback" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="flanger-mix" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="flanger-bypass" class="bypass-btn">On/Off</button>
+        </div>
         <!-- Chorus -->
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Chorus</span>
+            <div class="pedal-preset-controls">
+              <select id="chorus-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="chorus-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="chorus-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -213,13 +395,17 @@
               <span class="knob-value">5</span>
             </div>
           </div>
-          <button id="chorus-bypass" class="bypass-btn">Bypass</button>
+          <button id="chorus-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- Delay -->
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Delay</span>
+            <div class="pedal-preset-controls">
+              <select id="delay-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="delay-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="delay-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -245,13 +431,17 @@
               <span class="knob-value">3</span>
             </div>
           </div>
-          <button id="delay-bypass" class="bypass-btn">Bypass</button>
+          <button id="delay-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- Reverb -->
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">Reverb</span>
+            <div class="pedal-preset-controls">
+              <select id="reverb-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="reverb-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="reverb-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -270,7 +460,7 @@
               <span class="knob-value">3</span>
             </div>
           </div>
-          <button id="reverb-bypass" class="bypass-btn">Bypass</button>
+          <button id="reverb-bypass" class="bypass-btn">On/Off</button>
           <button id="reverb-load-ir" class="ir-btn">📂 Load IR File</button>
         </div>
 
@@ -278,6 +468,10 @@
         <div class="pedal">
           <div class="pedal-header">
             <span class="pedal-name">EQ</span>
+            <div class="pedal-preset-controls">
+              <select id="eq-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="eq-preset-save" class="pedal-preset-save" title="Save Preset">💾</button>
+            </div>
             <div id="eq-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -303,7 +497,7 @@
               <span class="knob-value">5</span>
             </div>
           </div>
-          <button id="eq-bypass" class="bypass-btn">Bypass</button>
+          <button id="eq-bypass" class="bypass-btn">On/Off</button>
         </div>
 
       </div>
@@ -395,7 +589,7 @@
   </main>
 
   <footer class="footer">
-    <p>Guitar Shop — Built with Web Audio API</p>
+    <p>Guitar Shop — Built with Core Audio</p>
   </footer>
 
   <script type="module" src="js/app.js"></script>

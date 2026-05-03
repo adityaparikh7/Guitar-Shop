@@ -93,8 +93,15 @@ export class Overdrive extends BaseEffect {
   }
   _updateCurve() {
     const n = 44100, c = new Float32Array(n), a = this._drive * 50 + 1;
-    for (let i = 0; i < n; i++) { const x = (i * 2) / n - 1; c[i] = Math.tanh(a * x) / Math.tanh(a); }
-    this._ws.curve = c; this._ws.oversample = '2x';
+    for (let i = 0; i < n; i++) {
+      const x = (i * 2) / n - 1;
+      if (x > 0) {
+        c[i] = (1 - Math.exp(-a * x)) / Math.tanh(a);
+      } else {
+        c[i] = -Math.tanh(-a * x * 0.5) / Math.tanh(a * 0.5);
+      }
+    }
+    this._ws.curve = c; this._ws.oversample = '4x';
   }
   setParam(n, v) {
     const t = this.context.currentTime;
@@ -206,7 +213,12 @@ export class Reverb extends BaseEffect {
     const buf = this.context.createBuffer(2, len, sr);
     for (let ch = 0; ch < 2; ch++) {
       const d = buf.getChannelData(ch);
-      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+      let lastVal = 0;
+      for (let i = 0; i < len; i++) {
+        const white = Math.random() * 2 - 1;
+        lastVal = (lastVal + white * 0.02) / 1.02;
+        d[i] = lastVal * Math.pow(1 - i / len, decay * 0.5) * 5;
+      }
     }
     this._convolver.buffer = buf;
   }
@@ -238,4 +250,154 @@ export class EQ extends BaseEffect {
     if (n === 'treble') { this._treble = v; this._high.gain.setTargetAtTime(v, t, 0.01); }
   }
   getParams() { return { bass: this._bass, mid: this._mid, treble: this._treble }; }
+}
+
+export class Phaser extends BaseEffect {
+  constructor(ctx) {
+    super(ctx, 'phaser');
+    this._rate = 0.5; this._depth = 0.5; this._feedback = 0.5; this._mix = 0.5;
+    this._lfo = ctx.createOscillator();
+    this._lfo.type = 'sine';
+    this._lfo.frequency.value = this._rate;
+    this._lfoGain = ctx.createGain();
+    this._lfoGain.gain.value = this._depth * 2000;
+    this._lfo.connect(this._lfoGain);
+    this._lfo.start();
+    
+    this._stages = [];
+    for (let i = 0; i < 4; i++) {
+      const stage = ctx.createBiquadFilter();
+      stage.type = 'allpass';
+      stage.frequency.value = 1000;
+      this._lfoGain.connect(stage.frequency);
+      this._stages.push(stage);
+    }
+    for (let i = 0; i < 3; i++) {
+      this._stages[i].connect(this._stages[i+1]);
+    }
+    
+    this._fbGain = ctx.createGain(); this._fbGain.gain.value = this._feedback * 0.8;
+    this._wetGain = ctx.createGain(); this._wetGain.gain.value = this._mix;
+    this._dryGain = ctx.createGain(); this._dryGain.gain.value = 1 - this._mix;
+    
+    this._input.connect(this._dryGain); this._dryGain.connect(this._output);
+    this._input.connect(this._stages[0]);
+    this._stages[3].connect(this._wetGain); this._wetGain.connect(this._output);
+    this._stages[3].connect(this._fbGain); this._fbGain.connect(this._stages[0]);
+  }
+  setParam(n, v) {
+    const t = this.context.currentTime;
+    if (n === 'rate') { this._rate = v; this._lfo.frequency.setTargetAtTime(v * 5, t, 0.01); }
+    if (n === 'depth') { this._depth = v; this._lfoGain.gain.setTargetAtTime(v * 3000, t, 0.01); }
+    if (n === 'feedback') { this._feedback = v; this._fbGain.gain.setTargetAtTime(v * 0.9, t, 0.01); }
+    if (n === 'mix') { this._mix = v; this._wetGain.gain.setTargetAtTime(v, t, 0.01); this._dryGain.gain.setTargetAtTime(1 - v, t, 0.01); }
+  }
+  getParams() { return { rate: this._rate, depth: this._depth, feedback: this._feedback, mix: this._mix }; }
+}
+
+export class Flanger extends BaseEffect {
+  constructor(ctx) {
+    super(ctx, 'flanger');
+    this._rate = 0.5; this._depth = 0.5; this._feedback = 0.5; this._mix = 0.5;
+    this._delay = ctx.createDelay(0.02);
+    this._delay.delayTime.value = 0.005;
+    this._lfo = ctx.createOscillator();
+    this._lfo.type = 'sine';
+    this._lfo.frequency.value = this._rate;
+    this._lfoGain = ctx.createGain();
+    this._lfoGain.gain.value = this._depth * 0.004;
+    this._lfo.connect(this._lfoGain);
+    this._lfoGain.connect(this._delay.delayTime);
+    this._lfo.start();
+    
+    this._fbGain = ctx.createGain(); this._fbGain.gain.value = this._feedback * 0.9;
+    this._wetGain = ctx.createGain(); this._wetGain.gain.value = this._mix;
+    this._dryGain = ctx.createGain(); this._dryGain.gain.value = 1 - this._mix;
+    
+    this._input.connect(this._dryGain); this._dryGain.connect(this._output);
+    this._input.connect(this._delay);
+    this._delay.connect(this._wetGain); this._wetGain.connect(this._output);
+    this._delay.connect(this._fbGain); this._fbGain.connect(this._delay);
+  }
+  setParam(n, v) {
+    const t = this.context.currentTime;
+    if (n === 'rate') { this._rate = v; this._lfo.frequency.setTargetAtTime(v * 5, t, 0.01); }
+    if (n === 'depth') { this._depth = v; this._lfoGain.gain.setTargetAtTime(v * 0.004, t, 0.01); }
+    if (n === 'feedback') { this._feedback = v; this._fbGain.gain.setTargetAtTime(v * 0.9, t, 0.01); }
+    if (n === 'mix') { this._mix = v; this._wetGain.gain.setTargetAtTime(v, t, 0.01); this._dryGain.gain.setTargetAtTime(1 - v, t, 0.01); }
+  }
+  getParams() { return { rate: this._rate, depth: this._depth, feedback: this._feedback, mix: this._mix }; }
+}
+
+export class EnvelopeFilter extends BaseEffect {
+  constructor(ctx) {
+    super(ctx, 'envelopefilter');
+    this._sensitivity = 0.5; this._q = 0.5; this._mix = 1.0;
+    this._analyser = ctx.createAnalyser();
+    this._analyser.fftSize = 256;
+    this._filter = ctx.createBiquadFilter();
+    this._filter.type = 'lowpass';
+    this._filter.frequency.value = 300;
+    this._filter.Q.value = this._q * 10;
+    
+    this._dryGain = ctx.createGain(); this._dryGain.gain.value = 1 - this._mix;
+    this._wetGain = ctx.createGain(); this._wetGain.gain.value = this._mix;
+    
+    this._input.connect(this._analyser);
+    this._input.connect(this._filter);
+    this._filter.connect(this._wetGain);
+    this._input.connect(this._dryGain);
+    this._wetGain.connect(this._output);
+    this._dryGain.connect(this._output);
+    
+    this._dataArray = new Float32Array(256);
+    this._envelope = 0;
+    this._tick = () => {
+      if (this.enabled) {
+        this._analyser.getFloatTimeDomainData(this._dataArray);
+        let sum = 0;
+        for (let i = 0; i < this._dataArray.length; i++) sum += this._dataArray[i] ** 2;
+        const rms = Math.sqrt(sum / this._dataArray.length);
+        const attack = 0.1; const release = 0.05;
+        if (rms > this._envelope) this._envelope += (rms - this._envelope) * attack;
+        else this._envelope += (rms - this._envelope) * release;
+        
+        const baseFreq = 300; const maxFreq = 3500;
+        const envVal = Math.min(1, this._envelope * (this._sensitivity * 10 + 1));
+        this._filter.frequency.setTargetAtTime(baseFreq + envVal * (maxFreq - baseFreq), ctx.currentTime, 0.01);
+      }
+      this._rafId = requestAnimationFrame(this._tick);
+    };
+    this._tick();
+  }
+  setParam(n, v) {
+    const t = this.context.currentTime;
+    if (n === 'sensitivity') { this._sensitivity = v; }
+    if (n === 'q') { this._q = v; this._filter.Q.setTargetAtTime(v * 15, t, 0.01); }
+    if (n === 'mix') { this._mix = v; this._wetGain.gain.setTargetAtTime(v, t, 0.01); this._dryGain.gain.setTargetAtTime(1 - v, t, 0.01); }
+  }
+  getParams() { return { sensitivity: this._sensitivity, q: this._q, mix: this._mix }; }
+}
+
+export class Boost extends BaseEffect {
+  constructor(ctx) {
+    super(ctx, 'boost');
+    this._gain = 0.5; this._tone = 0.5;
+    this._filter = ctx.createBiquadFilter();
+    this._filter.type = 'highshelf';
+    this._filter.frequency.value = 2000;
+    this._filter.gain.value = (this._tone - 0.5) * 10;
+    this._boostGain = ctx.createGain();
+    this._boostGain.gain.value = 1 + this._gain * 4;
+    
+    this._input.connect(this._filter);
+    this._filter.connect(this._boostGain);
+    this._boostGain.connect(this._output);
+  }
+  setParam(n, v) {
+    const t = this.context.currentTime;
+    if (n === 'gain') { this._gain = v; this._boostGain.gain.setTargetAtTime(1 + v * 4, t, 0.01); }
+    if (n === 'tone') { this._tone = v; this._filter.gain.setTargetAtTime((v - 0.5) * 10, t, 0.01); }
+  }
+  getParams() { return { gain: this._gain, tone: this._tone }; }
 }

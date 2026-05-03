@@ -2,7 +2,7 @@
  * App Controller — Wires UI controls to the audio engine, effects, and presets.
  */
 import { AudioEngine } from './audio-engine.js';
-import { NoiseGate, Compressor, Overdrive, Distortion, Chorus, Delay, Reverb, EQ } from './effects.js';
+import { NoiseGate, Compressor, EnvelopeFilter, Boost, Overdrive, Distortion, Phaser, Flanger, Chorus, Delay, Reverb, EQ } from './effects.js';
 import { AmpSim } from './amp-sim.js';
 import { Visualizer } from './visualizer.js';
 import { Tuner } from './tuner.js';
@@ -18,6 +18,8 @@ class App {
     this.presetManager = new PresetManager();
     this._knobDragState = null;
     this._audioInitialized = false;
+    this._useBridge = false;
+    this._bridgeDevices = [];
 
     // Pending state: track bypass/knob states before audio init
     this._pendingBypass = {};
@@ -30,22 +32,109 @@ class App {
    */
   setupUI() {
     this._setupPresets();
+    this._setupPedalPresets();
     this._setupKnobInteractions();
     this._setupBypassButtons();
     this._setupIRLoadingUI();
     this._setupVisMode();
     this._bindAllKnobs();
 
-    // Enumerate devices immediately (without requesting mic permission)
-    this._populateDevices(false).catch(e => console.warn('[App] Initial device enumeration failed:', e));
+    // Try bridge first, fall back to browser device enumeration
+    this._initDeviceEnumeration();
 
-    // Re-enumerate when new devices are connected/disconnected
-    navigator.mediaDevices?.addEventListener('devicechange', () => {
-      this._populateDevices(false).catch(() => {});
-    });
+    // Channel selector — switch channel on the bridge
+    const channelSelect = document.getElementById('channel-select');
+    if (channelSelect) {
+      channelSelect.addEventListener('change', (e) => {
+        const ch = parseInt(e.target.value, 10);
+        if (this._useBridge) {
+          this.engine.switchBridgeChannel(ch);
+        }
+      });
+    }
+
+    // Device selector — update channel list when device changes
+    const deviceSelect = document.getElementById('device-select');
+    if (deviceSelect) {
+      deviceSelect.addEventListener('change', () => {
+        this._updateChannelSelector();
+      });
+    }
+
+    // Bridge status callback
+    this.engine.onBridgeStatus = (connected, message) => {
+      const dot = document.getElementById('bridge-dot');
+      const text = document.getElementById('bridge-text');
+      if (dot) dot.classList.toggle('live', connected);
+      if (text) text.textContent = connected ? message : 'Bridge offline';
+    };
 
     // Load default preset (UI-only, no audio nodes yet)
     this._loadPresetUI('Clean');
+  }
+
+  async _initDeviceEnumeration() {
+    // Check if bridge is available
+    const bridgeAvailable = await this.engine.isBridgeAvailable();
+    const bridgeLabel = document.getElementById('bridge-text');
+
+    if (bridgeAvailable) {
+      this._useBridge = true;
+      if (bridgeLabel) bridgeLabel.textContent = 'Bridge online';
+      const dot = document.getElementById('bridge-dot');
+      if (dot) dot.classList.add('live');
+      await this._populateBridgeDevices();
+    } else {
+      this._useBridge = false;
+      if (bridgeLabel) bridgeLabel.textContent = 'Bridge offline — using browser audio';
+      // Fall back to browser enumeration
+      this._populateDevices(false).catch(e => console.warn('[App] Device enumeration failed:', e));
+      navigator.mediaDevices?.addEventListener('devicechange', () => {
+        this._populateDevices(false).catch(() => {});
+      });
+    }
+  }
+
+  async _populateBridgeDevices() {
+    const select = document.getElementById('device-select');
+    try {
+      this._bridgeDevices = await this.engine.getBridgeDevices();
+      select.innerHTML = '';
+      if (this._bridgeDevices.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '— No audio inputs found —';
+        select.appendChild(opt);
+      } else {
+        this._bridgeDevices.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.id;
+          opt.textContent = `${d.name} (${d.inputChannels}ch @ ${d.sampleRate}Hz)`;
+          select.appendChild(opt);
+        });
+      }
+      this._updateChannelSelector();
+    } catch (e) {
+      console.warn('[App] Bridge device enumeration failed:', e);
+    }
+  }
+
+  _updateChannelSelector() {
+    const deviceSelect = document.getElementById('device-select');
+    const channelSelect = document.getElementById('channel-select');
+    if (!channelSelect || !this._useBridge) return;
+
+    const deviceId = parseInt(deviceSelect.value, 10);
+    const device = this._bridgeDevices.find(d => d.id === deviceId);
+    const channelCount = device?.inputChannels || 2;
+
+    channelSelect.innerHTML = '';
+    for (let i = 0; i < channelCount; i++) {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `Channel ${i + 1}`;
+      channelSelect.appendChild(opt);
+    }
   }
 
   /**
@@ -67,8 +156,12 @@ class App {
     this.effects = {
       noisegate: new NoiseGate(ctx),
       compressor: new Compressor(ctx),
+      envelopefilter: new EnvelopeFilter(ctx),
+      boost: new Boost(ctx),
       overdrive: new Overdrive(ctx),
       distortion: new Distortion(ctx),
+      phaser: new Phaser(ctx),
+      flanger: new Flanger(ctx),
       chorus: new Chorus(ctx),
       delay: new Delay(ctx),
       reverb: new Reverb(ctx),
@@ -86,8 +179,12 @@ class App {
     const chain = [
       this.effects.noisegate,
       this.effects.compressor,
+      this.effects.envelopefilter,
+      this.effects.boost,
       this.effects.overdrive,
       this.effects.distortion,
+      this.effects.phaser,
+      this.effects.flanger,
       this.effects.chorus,
       this.effects.delay,
       this.effects.reverb,
@@ -149,7 +246,7 @@ class App {
 
   // ─── Bypass Buttons ───
   _setupBypassButtons() {
-    const effectNames = ['noisegate', 'compressor', 'overdrive', 'distortion', 'chorus', 'delay', 'reverb', 'eq'];
+    const effectNames = ['noisegate', 'compressor', 'envelopefilter', 'boost', 'overdrive', 'distortion', 'phaser', 'flanger', 'chorus', 'delay', 'reverb', 'eq'];
     effectNames.forEach(name => {
       const btn = document.getElementById(`${name}-bypass`);
       if (!btn) return;
@@ -209,6 +306,13 @@ class App {
     // Compressor
     this._bindKnob('compressor-threshold', (v) => this._setEffectParam('compressor', 'threshold', -50 + v * 50));
     this._bindKnob('compressor-ratio', (v) => this._setEffectParam('compressor', 'ratio', 1 + v * 19));
+    // Envelope Filter
+    this._bindKnob('envelopefilter-sensitivity', (v) => this._setEffectParam('envelopefilter', 'sensitivity', v));
+    this._bindKnob('envelopefilter-q', (v) => this._setEffectParam('envelopefilter', 'q', v));
+    this._bindKnob('envelopefilter-mix', (v) => this._setEffectParam('envelopefilter', 'mix', v));
+    // Boost
+    this._bindKnob('boost-gain', (v) => this._setEffectParam('boost', 'gain', v));
+    this._bindKnob('boost-tone', (v) => this._setEffectParam('boost', 'tone', v));
     // Overdrive
     this._bindKnob('overdrive-drive', (v) => this._setEffectParam('overdrive', 'drive', v));
     this._bindKnob('overdrive-tone', (v) => this._setEffectParam('overdrive', 'tone', v));
@@ -217,6 +321,16 @@ class App {
     this._bindKnob('distortion-gain', (v) => this._setEffectParam('distortion', 'gain', v));
     this._bindKnob('distortion-tone', (v) => this._setEffectParam('distortion', 'tone', v));
     this._bindKnob('distortion-level', (v) => this._setEffectParam('distortion', 'level', v));
+    // Phaser
+    this._bindKnob('phaser-rate', (v) => this._setEffectParam('phaser', 'rate', v));
+    this._bindKnob('phaser-depth', (v) => this._setEffectParam('phaser', 'depth', v));
+    this._bindKnob('phaser-feedback', (v) => this._setEffectParam('phaser', 'feedback', v));
+    this._bindKnob('phaser-mix', (v) => this._setEffectParam('phaser', 'mix', v));
+    // Flanger
+    this._bindKnob('flanger-rate', (v) => this._setEffectParam('flanger', 'rate', v));
+    this._bindKnob('flanger-depth', (v) => this._setEffectParam('flanger', 'depth', v));
+    this._bindKnob('flanger-feedback', (v) => this._setEffectParam('flanger', 'feedback', v));
+    this._bindKnob('flanger-mix', (v) => this._setEffectParam('flanger', 'mix', v));
     // Chorus
     this._bindKnob('chorus-rate', (v) => this._setEffectParam('chorus', 'rate', v * 10));
     this._bindKnob('chorus-depth', (v) => this._setEffectParam('chorus', 'depth', v));
@@ -300,6 +414,76 @@ class App {
   }
 
   // ─── Presets ───
+
+  _setupPedalPresets() {
+    const effectNames = ['noisegate', 'compressor', 'envelopefilter', 'boost', 'overdrive', 'distortion', 'phaser', 'flanger', 'chorus', 'delay', 'reverb', 'eq'];
+    effectNames.forEach(name => {
+      const select = document.getElementById(`${name}-preset`);
+      const saveBtn = document.getElementById(`${name}-preset-save`);
+      if (!select || !saveBtn) return;
+
+      const populate = () => {
+        const current = select.value;
+        select.innerHTML = '<option value="">Preset</option>';
+        
+        const factory = this.presetManager.getPedalFactoryPresets(name);
+        if (factory.length > 0) {
+          const group = document.createElement('optgroup');
+          group.label = 'Factory';
+          factory.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p; opt.textContent = p;
+            group.appendChild(opt);
+          });
+          select.appendChild(group);
+        }
+        
+        const user = Object.keys(this.presetManager.getPedalUserPresets(name));
+        if (user.length > 0) {
+          const group = document.createElement('optgroup');
+          group.label = 'User';
+          user.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p; opt.textContent = p;
+            group.appendChild(opt);
+          });
+          select.appendChild(group);
+        }
+        if (current) select.value = current;
+      };
+
+      populate();
+
+      select.addEventListener('change', () => {
+        const presetName = select.value;
+        if (!presetName) return;
+        const presetData = this.presetManager.getPedalPreset(name, presetName);
+        if (presetData) {
+          if (this._currentPreset && this._currentPreset.effects[name]) {
+            this._currentPreset.effects[name].params = { ...presetData };
+            this._syncKnobsFromPreset(this._currentPreset);
+          }
+          if (this._audioInitialized && this.effects[name]) {
+            for (const [k, v] of Object.entries(presetData)) {
+              this.effects[name].setParam(k, v);
+            }
+          }
+        }
+      });
+
+      saveBtn.addEventListener('click', () => {
+        const presetName = prompt(`Save ${name} preset as:`);
+        if (!presetName) return;
+        const data = this._currentPreset && this._currentPreset.effects[name] 
+          ? this._currentPreset.effects[name].params 
+          : (this.effects[name] ? this.effects[name].getParams() : {});
+        this.presetManager.savePedalPreset(name, presetName, data);
+        populate();
+        select.value = presetName;
+      });
+    });
+  }
+
   _setupPresets() {
     const select = document.getElementById('preset-select');
     const saveBtn = document.getElementById('preset-save');
@@ -435,6 +619,15 @@ class App {
       knobMap['compressor-threshold'] = (preset.effects.compressor.params.threshold + 50) / 50;
       knobMap['compressor-ratio'] = (preset.effects.compressor.params.ratio - 1) / 19;
     }
+    if (preset.effects.envelopefilter) {
+      knobMap['envelopefilter-sensitivity'] = preset.effects.envelopefilter.params.sensitivity;
+      knobMap['envelopefilter-q'] = preset.effects.envelopefilter.params.q;
+      knobMap['envelopefilter-mix'] = preset.effects.envelopefilter.params.mix;
+    }
+    if (preset.effects.boost) {
+      knobMap['boost-gain'] = preset.effects.boost.params.gain;
+      knobMap['boost-tone'] = preset.effects.boost.params.tone;
+    }
     if (preset.effects.overdrive) {
       knobMap['overdrive-drive'] = preset.effects.overdrive.params.drive;
       knobMap['overdrive-tone'] = preset.effects.overdrive.params.tone;
@@ -444,6 +637,18 @@ class App {
       knobMap['distortion-gain'] = preset.effects.distortion.params.gain;
       knobMap['distortion-tone'] = preset.effects.distortion.params.tone;
       knobMap['distortion-level'] = preset.effects.distortion.params.level;
+    }
+    if (preset.effects.phaser) {
+      knobMap['phaser-rate'] = preset.effects.phaser.params.rate;
+      knobMap['phaser-depth'] = preset.effects.phaser.params.depth;
+      knobMap['phaser-feedback'] = preset.effects.phaser.params.feedback;
+      knobMap['phaser-mix'] = preset.effects.phaser.params.mix;
+    }
+    if (preset.effects.flanger) {
+      knobMap['flanger-rate'] = preset.effects.flanger.params.rate;
+      knobMap['flanger-depth'] = preset.effects.flanger.params.depth;
+      knobMap['flanger-feedback'] = preset.effects.flanger.params.feedback;
+      knobMap['flanger-mix'] = preset.effects.flanger.params.mix;
     }
     if (preset.effects.chorus) {
       knobMap['chorus-rate'] = preset.effects.chorus.params.rate / 10;
@@ -627,15 +832,28 @@ document.addEventListener('DOMContentLoaded', () => {
       startBtn.classList.remove('active');
       document.getElementById('status-dot').classList.remove('live');
     } else {
-      const deviceId = document.getElementById('device-select').value;
+      const deviceSelect = document.getElementById('device-select');
+      const channelSelect = document.getElementById('channel-select');
+      const deviceId = deviceSelect.value;
+      const channel = parseInt(channelSelect?.value || '0', 10);
+
       try {
-        await app.engine.start(deviceId);
+        if (app._useBridge) {
+          // Use Core Audio bridge (primary)
+          await app.engine.startFromBridge(parseInt(deviceId, 10), channel);
+        } else {
+          // Fallback to browser getUserMedia
+          await app.engine.start(deviceId);
+        }
         if (app.visualizer) app.visualizer.start();
         startBtn.textContent = '⏹ STOP';
         startBtn.classList.add('active');
         document.getElementById('status-dot').classList.add('live');
       } catch (e) {
         console.error('Failed to start audio:', e);
+        alert(app._useBridge
+          ? 'Failed to connect to AudioBridge. Make sure it is running (./audio-bridge/start-bridge.sh)'
+          : 'Failed to start audio: ' + e.message);
       }
     }
     app._updateStateUI();
