@@ -220,16 +220,25 @@ class AudioCapture {
             self.onAudioBuffer?(samples)
         }
 
-        try engine.start()
-        isCapturing = true
-
-        print("[AudioBridge] Capturing from device \(deviceID) channel \(channel + 1) at \(hwFormat.sampleRate)Hz")
+        do {
+            try engine.start()
+            isCapturing = true
+            print("[AudioBridge] Capturing from device \(deviceID) channel \(channel + 1) at \(hwFormat.sampleRate)Hz")
+        } catch {
+            engine.inputNode.removeTap(onBus: 0)
+            throw error
+        }
     }
 
     func stop() {
-        if isCapturing {
-            engine.inputNode.removeTap(onBus: 0)
+        // Always attempt to remove the tap to avoid 'nullptr == Tap()' crashes
+        engine.inputNode.removeTap(onBus: 0)
+        
+        if engine.isRunning {
             engine.stop()
+        }
+        
+        if isCapturing {
             isCapturing = false
             print("[AudioBridge] Stopped capture")
         }
