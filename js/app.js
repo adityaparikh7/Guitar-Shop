@@ -770,7 +770,7 @@ class App {
     const statusText = document.getElementById('status-text');
     if (statusText) {
       statusText.textContent = state.isRunning
-        ? `Live — ${state.sampleRate}Hz — Latency: ${(state.baseLatency * 1000).toFixed(1)}ms`
+        ? `Live — ${state.sampleRate}Hz — Latency: ${(state.baseLatency * 1000).toFixed(1)}ms — ${state.transport}`
         : 'Stopped';
     }
   }
@@ -779,8 +779,12 @@ class App {
    * Monitor signal levels for debugging — logs every 2 seconds.
    */
   _startSignalMonitor() {
-    const inputBuf = new Float32Array(2048);
-    const outputBuf = new Float32Array(2048);
+    // Reuse buffers across intervals to avoid repeated allocation.
+    // Sized to match analyser fftSize (1024).
+    this._monitorInputBuf = this._monitorInputBuf || new Float32Array(1024);
+    this._monitorOutputBuf = this._monitorOutputBuf || new Float32Array(1024);
+    const inputBuf = this._monitorInputBuf;
+    const outputBuf = this._monitorOutputBuf;
 
     setInterval(() => {
       if (!this.engine.isRunning) return;

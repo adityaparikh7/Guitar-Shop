@@ -532,6 +532,8 @@ class BridgeServer {
             Content-Length: \(responseBody.count)\r
             Access-Control-Allow-Origin: *\r
             Access-Control-Allow-Headers: *\r
+            Cross-Origin-Opener-Policy: same-origin\r
+            Cross-Origin-Embedder-Policy: require-corp\r
             Connection: close\r
             \r\n
             """

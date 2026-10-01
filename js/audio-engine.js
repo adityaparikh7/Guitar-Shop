@@ -5,7 +5,17 @@
  *   1. **Bridge mode** (primary) — Receives audio from the native Swift AudioBridge
  *      via WebSocket. Uses Apple Core Audio for proper per-channel USB device access.
  *   2. **Browser mode** (fallback) — Uses getUserMedia for basic audio input.
+ *
+ * Audio transport uses SharedArrayBuffer for zero-copy delivery to the AudioWorklet
+ * when cross-origin isolation is available, falling back to postMessage otherwise.
  */
+
+// ─── SharedArrayBuffer ring buffer constants (must match audio-stream-processor.js) ──
+const CTRL_WRITE_POS = 0;
+const CTRL_READ_POS = 1;
+const CTRL_CAPACITY = 2;
+const RING_BUFFER_SIZE = 2048;
+
 export class AudioEngine {
   constructor() {
     this.context = null;
@@ -24,6 +34,13 @@ export class AudioEngine {
     this._bridgeSampleRate = 48000;
     this._bridgeDeviceId = null;
     this._bridgeChannel = 0;
+
+    // SharedArrayBuffer transport
+    this._useSAB = false;
+    this._ringBufferSAB = null;
+    this._controlSAB = null;
+    this._ringBufferView = null;
+    this._controlView = null;
 
     // Browser fallback state
     this.inputStream = null;
@@ -47,6 +64,7 @@ export class AudioEngine {
 
     this.context = new (window.AudioContext || window.webkitAudioContext)({
       latencyHint: 'interactive',
+      sampleRate: 48000,
     });
 
     // Create master gain
@@ -58,28 +76,52 @@ export class AudioEngine {
     this.inputGainNode = this.context.createGain();
     this.inputGainNode.gain.value = 2.0;
 
-    // Analysers for visualizer
+    // Analysers for visualizer — reduced fftSize and smoothing for lower overhead
     this.analyserInput = this.context.createAnalyser();
-    this.analyserInput.fftSize = 2048;
-    this.analyserInput.smoothingTimeConstant = 0.8;
+    this.analyserInput.fftSize = 1024;
+    this.analyserInput.smoothingTimeConstant = 0.5;
 
     this.analyserOutput = this.context.createAnalyser();
-    this.analyserOutput.fftSize = 2048;
-    this.analyserOutput.smoothingTimeConstant = 0.8;
+    this.analyserOutput.fftSize = 1024;
+    this.analyserOutput.smoothingTimeConstant = 0.5;
 
     // Connect master gain → output analyser → destination
     this.masterGainNode.connect(this.analyserOutput);
     this.analyserOutput.connect(this.context.destination);
 
-    // Register the AudioWorklet processor for bridge mode
+    // Check SharedArrayBuffer availability — requires crossOriginIsolated (COOP/COEP headers)
+    this._useSAB = false;
+    if (self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined' && typeof Atomics !== 'undefined') {
+      try {
+        this._ringBufferSAB = new SharedArrayBuffer(RING_BUFFER_SIZE * Float32Array.BYTES_PER_ELEMENT);
+        this._controlSAB = new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT);
+        this._ringBufferView = new Float32Array(this._ringBufferSAB);
+        this._controlView = new Int32Array(this._controlSAB);
+        // Initialize control block
+        Atomics.store(this._controlView, CTRL_WRITE_POS, 0);
+        Atomics.store(this._controlView, CTRL_READ_POS, 0);
+        Atomics.store(this._controlView, CTRL_CAPACITY, RING_BUFFER_SIZE);
+        this._useSAB = true;
+        console.log('[AudioEngine] SharedArrayBuffer available — using zero-copy transport');
+      } catch (e) {
+        console.warn('[AudioEngine] SharedArrayBuffer allocation failed, using postMessage:', e);
+        this._useSAB = false;
+      }
+    } else {
+      console.warn(`[AudioEngine] SharedArrayBuffer unavailable (crossOriginIsolated=${self.crossOriginIsolated}) — using postMessage transport`);
+    }
+
+    // Register AudioWorklet processors
     try {
       await this.context.audioWorklet.addModule('js/audio-stream-processor.js');
-      console.log('[AudioEngine] AudioWorklet processor registered');
+      await this.context.audioWorklet.addModule('js/gate-processor.js');
+      await this.context.audioWorklet.addModule('js/envelope-processor.js');
+      console.log('[AudioEngine] AudioWorklet processors registered');
     } catch (e) {
       console.warn('[AudioEngine] Could not register AudioWorklet:', e);
     }
 
-    console.log(`[AudioEngine] Initialized — sampleRate: ${this.context.sampleRate}, baseLatency: ${this.context.baseLatency?.toFixed(4)}s`);
+    console.log(`[AudioEngine] Initialized — sampleRate: ${this.context.sampleRate}, baseLatency: ${this.context.baseLatency?.toFixed(4)}s, transport: ${this._useSAB ? 'SAB' : 'postMessage'}`);
   }
 
   // ─── Bridge Mode (Core Audio via Swift AudioBridge) ───────────────────
@@ -155,12 +197,23 @@ export class AudioEngine {
 
         this._ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
-            // Binary audio data — forward to AudioWorklet
-            if (this._workletNode) {
-              const float32Data = new Float32Array(event.data);
+            // Binary audio data — write to transport
+            const float32Data = new Float32Array(event.data);
+
+            // Debug: count incoming audio messages
+            this._wsAudioMsgCount = (this._wsAudioMsgCount || 0) + 1;
+            if (this._wsAudioMsgCount <= 3 || this._wsAudioMsgCount % 1000 === 0) {
+              console.log(`[AudioEngine] WS audio msg #${this._wsAudioMsgCount}: ${float32Data.length} samples, useSAB=${this._useSAB}, worklet=${!!this._workletNode}`);
+            }
+
+            if (this._useSAB && this._ringBufferView && this._controlView) {
+              // Zero-copy: write directly into SharedArrayBuffer
+              this._writeToSAB(float32Data);
+            } else if (this._workletNode) {
+              // Fallback: postMessage copy
               this._workletNode.port.postMessage(float32Data);
             } else {
-              console.warn('[AudioEngine] Received audio but no worklet node!');
+              // Worklet not yet created — drop this chunk (will be a few ms at most)
             }
           } else {
             // JSON control message
@@ -192,6 +245,37 @@ export class AudioEngine {
         reject(err);
       }
     });
+  }
+
+  /**
+   * Write audio samples directly into the SharedArrayBuffer ring buffer.
+   * Called from the main thread's WebSocket onmessage handler.
+   */
+  _writeToSAB(samples) {
+    const buf = this._ringBufferView;
+    const ctrl = this._controlView;
+    const capacity = RING_BUFFER_SIZE;
+    let len = samples.length;
+
+    if (len === 0) return;
+    if (len > capacity) {
+      samples = samples.subarray(len - capacity);
+      len = capacity;
+    }
+
+    let wp = Atomics.load(ctrl, CTRL_WRITE_POS);
+
+    // Write into ring buffer, handling wrap-around
+    const spaceToEnd = capacity - wp;
+
+    if (len <= spaceToEnd) {
+      buf.set(samples, wp);
+    } else {
+      buf.set(samples.subarray(0, spaceToEnd), wp);
+      buf.set(samples.subarray(spaceToEnd), 0);
+    }
+
+    Atomics.store(ctrl, CTRL_WRITE_POS, (wp + len) % capacity);
   }
 
   /**
@@ -238,12 +322,26 @@ export class AudioEngine {
       this._workletNode.disconnect();
     }
 
+    // Reset SAB positions for a clean start
+    if (this._useSAB && this._controlView) {
+      Atomics.store(this._controlView, CTRL_WRITE_POS, 0);
+      Atomics.store(this._controlView, CTRL_READ_POS, 0);
+    }
+
     try {
+      // Build processor options — pass SAB references if available
+      const processorOptions = {};
+      if (this._useSAB) {
+        processorOptions.ringBufferSAB = this._ringBufferSAB;
+        processorOptions.controlSAB = this._controlSAB;
+      }
+
       // Create AudioWorklet node
       this._workletNode = new AudioWorkletNode(this.context, 'audio-stream-processor', {
-        numberOfInputs: 0,     // No direct input — we feed data via postMessage
+        numberOfInputs: 0,     // No direct input — we feed data via SAB or postMessage
         numberOfOutputs: 1,
         outputChannelCount: [1], // Mono output
+        processorOptions: processorOptions,
       });
     } catch (e) {
       console.error('[AudioEngine] Failed to create AudioWorkletNode. Is the page served over HTTP?', e);
@@ -254,7 +352,8 @@ export class AudioEngine {
     // Listen for buffer health reports
     this._workletNode.port.onmessage = (event) => {
       if (event.data.type === 'health') {
-        console.log(`[AudioEngine] Buffer: ${event.data.fillPercent}% full, ${event.data.underruns} underruns`);
+        const h = event.data;
+        console.log(`[AudioEngine] Buffer: ${h.fillPercent}% full (${h.buffered}/${h.capacity}), underruns: ${h.underruns}, mode: ${h.mode}, preFilled: ${h.preFilled}, postMsgs: ${h.postMsgCount}`);
         this.onBufferHealth?.(event.data);
       }
     };
@@ -265,7 +364,7 @@ export class AudioEngine {
 
     this.rebuildChain();
 
-    console.log('[AudioEngine] AudioWorklet node connected — signal chain ready');
+    console.log(`[AudioEngine] AudioWorklet node connected — signal chain ready (${this._useSAB ? 'SAB' : 'postMessage'} transport)`);
     console.log(`[AudioEngine] Chain: WorkletNode → InputGain(${this.inputGainNode.gain.value}) → Analyser → Effects → MasterGain(${this.masterGainNode.gain.value}) → Destination`);
   }
 
@@ -373,6 +472,12 @@ export class AudioEngine {
       this._workletNode = null;
     }
 
+    // Reset SAB positions
+    if (this._useSAB && this._controlView) {
+      Atomics.store(this._controlView, CTRL_WRITE_POS, 0);
+      Atomics.store(this._controlView, CTRL_READ_POS, 0);
+    }
+
     // Stop browser fallback
     if (this.sourceNode) {
       this.sourceNode.disconnect();
@@ -478,6 +583,7 @@ export class AudioEngine {
       baseLatency: this.context?.baseLatency || 0,
       outputLatency: this.context?.outputLatency || 0,
       bridgeConnected: this._bridgeConnected,
+      transport: this._useSAB ? 'SharedArrayBuffer' : 'postMessage',
     };
   }
 

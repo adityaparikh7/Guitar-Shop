@@ -26,27 +26,35 @@ export class NoiseGate extends BaseEffect {
   constructor(ctx) {
     super(ctx, 'noisegate');
     this.threshold = -50;
-    this._analyser = ctx.createAnalyser();
-    this._analyser.fftSize = 256;
-    this._gateGain = ctx.createGain();
-    this._input.connect(this._analyser);
-    this._input.connect(this._gateGain);
-    this._gateGain.connect(this._output);
-    this._dataArray = new Float32Array(256);
-    this._tick = () => {
-      if (!this.enabled) { this._gateGain.gain.value = 1; }
-      else {
-        this._analyser.getFloatTimeDomainData(this._dataArray);
-        let sum = 0;
-        for (let i = 0; i < this._dataArray.length; i++) sum += this._dataArray[i] ** 2;
-        const db = 20 * Math.log10(Math.sqrt(sum / this._dataArray.length) + 1e-10);
-        this._gateGain.gain.setTargetAtTime(db > this.threshold ? 1 : 0, ctx.currentTime, 0.005);
-      }
-      this._rafId = requestAnimationFrame(this._tick);
-    };
-    this._tick();
+
+    // Use AudioWorklet gate-processor for audio-rate gating (~2.6ms response)
+    // instead of requestAnimationFrame polling (~16ms response)
+    try {
+      this._gateNode = new AudioWorkletNode(ctx, 'gate-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      this._thresholdParam = this._gateNode.parameters.get('threshold');
+      this._thresholdParam.value = this.threshold;
+      this._input.connect(this._gateNode);
+      this._gateNode.connect(this._output);
+      this._useWorklet = true;
+    } catch (e) {
+      // Fallback: simple gain node pass-through if worklet not available
+      console.warn('[NoiseGate] AudioWorklet unavailable, using bypass:', e);
+      this._input.connect(this._output);
+      this._useWorklet = false;
+    }
   }
-  setParam(n, v) { if (n === 'threshold') this.threshold = v; }
+  setParam(n, v) {
+    if (n === 'threshold') {
+      this.threshold = v;
+      if (this._useWorklet && this._thresholdParam) {
+        this._thresholdParam.setValueAtTime(v, this.context.currentTime);
+      }
+    }
+  }
   getParams() { return { threshold: this.threshold }; }
 }
 
@@ -101,7 +109,7 @@ export class Overdrive extends BaseEffect {
         c[i] = -Math.tanh(-a * x * 0.5) / Math.tanh(a * 0.5);
       }
     }
-    this._ws.curve = c; this._ws.oversample = '4x';
+    this._ws.curve = c; this._ws.oversample = '2x';
   }
   setParam(n, v) {
     const t = this.context.currentTime;
@@ -135,7 +143,7 @@ export class Distortion extends BaseEffect {
   _updateCurve() {
     const n = 44100, c = new Float32Array(n), a = this._gain * 100 + 1;
     for (let i = 0; i < n; i++) { const x = (i * 2) / n - 1; c[i] = (Math.PI + a) * x / (Math.PI + a * Math.abs(x)); }
-    this._ws.curve = c; this._ws.oversample = '4x';
+    this._ws.curve = c; this._ws.oversample = '2x';
   }
   setParam(n, v) {
     const t = this.context.currentTime;
@@ -333,46 +341,63 @@ export class EnvelopeFilter extends BaseEffect {
   constructor(ctx) {
     super(ctx, 'envelopefilter');
     this._sensitivity = 0.5; this._q = 0.5; this._mix = 1.0;
-    this._analyser = ctx.createAnalyser();
-    this._analyser.fftSize = 256;
+
+    // BiquadFilter for the actual filtering
     this._filter = ctx.createBiquadFilter();
     this._filter.type = 'lowpass';
     this._filter.frequency.value = 300;
     this._filter.Q.value = this._q * 10;
-    
+
     this._dryGain = ctx.createGain(); this._dryGain.gain.value = 1 - this._mix;
     this._wetGain = ctx.createGain(); this._wetGain.gain.value = this._mix;
-    
-    this._input.connect(this._analyser);
-    this._input.connect(this._filter);
-    this._filter.connect(this._wetGain);
-    this._input.connect(this._dryGain);
-    this._wetGain.connect(this._output);
-    this._dryGain.connect(this._output);
-    
-    this._dataArray = new Float32Array(256);
-    this._envelope = 0;
-    this._tick = () => {
-      if (this.enabled) {
-        this._analyser.getFloatTimeDomainData(this._dataArray);
-        let sum = 0;
-        for (let i = 0; i < this._dataArray.length; i++) sum += this._dataArray[i] ** 2;
-        const rms = Math.sqrt(sum / this._dataArray.length);
-        const attack = 0.1; const release = 0.05;
-        if (rms > this._envelope) this._envelope += (rms - this._envelope) * attack;
-        else this._envelope += (rms - this._envelope) * release;
-        
-        const baseFreq = 300; const maxFreq = 3500;
-        const envVal = Math.min(1, this._envelope * (this._sensitivity * 10 + 1));
-        this._filter.frequency.setTargetAtTime(baseFreq + envVal * (maxFreq - baseFreq), ctx.currentTime, 0.01);
-      }
-      this._rafId = requestAnimationFrame(this._tick);
-    };
-    this._tick();
+
+    // Use AudioWorklet envelope-follower-processor for audio-rate envelope tracking
+    // (~2.6ms response instead of ~16ms from requestAnimationFrame)
+    try {
+      this._envNode = new AudioWorkletNode(ctx, 'envelope-follower-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      this._sensitivityParam = this._envNode.parameters.get('sensitivity');
+      this._sensitivityParam.value = this._sensitivity;
+
+      // The envelope worklet sends frequency updates via postMessage
+      this._envNode.port.onmessage = (event) => {
+        if (event.data.type === 'envelope') {
+          this._filter.frequency.setTargetAtTime(event.data.frequency, ctx.currentTime, 0.005);
+        }
+      };
+
+      // Signal flow: input → envNode (for envelope detection, passes audio through)
+      //              envNode output → filter → wetGain → output
+      //              input → dryGain → output
+      this._input.connect(this._envNode);
+      this._envNode.connect(this._filter);
+      this._filter.connect(this._wetGain);
+      this._input.connect(this._dryGain);
+      this._wetGain.connect(this._output);
+      this._dryGain.connect(this._output);
+      this._useWorklet = true;
+    } catch (e) {
+      // Fallback: no envelope modulation, just pass through filter
+      console.warn('[EnvelopeFilter] AudioWorklet unavailable, using static filter:', e);
+      this._input.connect(this._filter);
+      this._filter.connect(this._wetGain);
+      this._input.connect(this._dryGain);
+      this._wetGain.connect(this._output);
+      this._dryGain.connect(this._output);
+      this._useWorklet = false;
+    }
   }
   setParam(n, v) {
     const t = this.context.currentTime;
-    if (n === 'sensitivity') { this._sensitivity = v; }
+    if (n === 'sensitivity') {
+      this._sensitivity = v;
+      if (this._useWorklet && this._sensitivityParam) {
+        this._sensitivityParam.setValueAtTime(v, t);
+      }
+    }
     if (n === 'q') { this._q = v; this._filter.Q.setTargetAtTime(v * 15, t, 0.01); }
     if (n === 'mix') { this._mix = v; this._wetGain.gain.setTargetAtTime(v, t, 0.01); this._dryGain.gain.setTargetAtTime(1 - v, t, 0.01); }
   }

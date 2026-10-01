@@ -59,7 +59,7 @@ export class Visualizer {
 
   _draw() {
     const { ctx, W, H } = this;
-    ctx.fillStyle = '#0a0a0f';
+    ctx.fillStyle = '#141210';
     ctx.fillRect(0, 0, W, H);
 
     // Draw grid
@@ -78,7 +78,7 @@ export class Visualizer {
 
   _drawGrid() {
     const { ctx, W, H } = this;
-    ctx.strokeStyle = 'rgba(100, 200, 255, 0.06)';
+    ctx.strokeStyle = 'rgba(232, 199, 138, 0.05)';
     ctx.lineWidth = 0.5;
     // Horizontal
     for (let i = 0; i < 8; i++) {
@@ -100,9 +100,9 @@ export class Visualizer {
     const step = Math.floor(data.length / W) || 1;
 
     // Glow effect
-    ctx.shadowColor = '#00e5ff';
+    ctx.shadowColor = '#ffb020';
     ctx.shadowBlur = 8;
-    ctx.strokeStyle = '#00e5ff';
+    ctx.strokeStyle = '#ffb020';
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = 0; i < W; i++) {
@@ -129,8 +129,8 @@ export class Visualizer {
       const x = i * barW;
       if (x > W) break;
 
-      const hue = 180 + v * 60;
-      ctx.fillStyle = `hsla(${hue}, 100%, ${40 + v * 30}%, 0.7)`;
+      const hue = 45 - v * 45;
+      ctx.fillStyle = `hsla(${hue}, 90%, ${40 + v * 30}%, 0.7)`;
       ctx.fillRect(x, H - barH, barW - 1, barH);
     }
   }
