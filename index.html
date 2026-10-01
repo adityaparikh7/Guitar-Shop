@@ -83,6 +83,38 @@
       </div>
     </div>
 
+    <!-- ═══ TEST BENCH ═══ -->
+    <section class="test-bench" id="test-bench">
+      <div class="test-bench-header">
+        <span class="section-title">Test Bench</span>
+        <span class="test-bench-sub">No guitar handy? Push a signal through the chain.</span>
+        <button id="bypass-all" class="btn btn-bypass" title="Bypass every pedal and the amp, for an A/B against the raw signal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h5l3-7 3 14 2-7h3"/></svg> A/B Bypass All</button>
+      </div>
+
+      <div class="test-bench-row">
+        <label for="test-source">Source</label>
+        <select id="test-source"></select>
+        <button id="test-play" class="btn btn-primary">▶ PLAY</button>
+        <button id="test-loop" class="btn btn-toggle active" aria-pressed="true">⟳ Loop</button>
+        <div class="test-level">
+          <label for="test-level">Level</label>
+          <input type="range" id="test-level" min="0" max="100" value="35">
+          <span id="test-level-value" class="test-level-value">35</span>
+        </div>
+        <button id="test-load-file" class="ir-btn test-file-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> <span id="test-file-label">Load audio file…</span></button>
+      </div>
+
+      <div class="test-bench-footer">
+        <div class="test-progress">
+          <div id="test-progress-fill" class="test-progress-fill"></div>
+        </div>
+        <span id="test-time" class="test-time">0:00 / 0:00</span>
+      </div>
+
+      <p id="test-hint" class="test-hint"></p>
+      <div class="test-drop-hint">Drop an audio file to load it</div>
+    </section>
+
     <!-- ═══ PEDALBOARD ═══ -->
     <section class="pedalboard">
       <h2 class="section-title">Pedalboard</h2>

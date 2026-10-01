@@ -46,9 +46,17 @@ export class AudioEngine {
     this.inputStream = null;
     this.sourceNode = null;
 
+    // Local source state (test signal — generated buffer or decoded file)
+    this._localSourceNode = null;
+
+    // Global bypass — routes input straight to master, skipping every effect
+    // and the amp, without touching any pedal's own enabled state.
+    this.bypassAll = false;
+
     // Callbacks for UI updates
     this.onBridgeStatus = null;   // (connected: boolean, message: string) => void
     this.onBufferHealth = null;   // (health: object) => void
+    this.onLocalSourceStopped = null; // () => void — fired when stopInput() tears down a local source
 
     // Bridge server config
     this.BRIDGE_WS_URL = 'ws://localhost:9876';
@@ -453,6 +461,45 @@ export class AudioEngine {
     }
   }
 
+  // ─── Local Source Mode (test signal) ──────────────────────────────────
+
+  /**
+   * Route a locally produced source into the chain in place of a live input.
+   * Used by the test bench — a generated signal or a decoded audio file sits
+   * exactly where a pickup would, so everything downstream behaves identically.
+   *
+   * @param {AudioNode} node - the source's output node
+   */
+  async startFromLocalSource(node) {
+    if (!this.context) await this.init();
+
+    if (this.context.state === 'suspended') {
+      await this.context.resume();
+    }
+
+    this.stopInput();
+
+    this._localSourceNode = node;
+
+    // Connect: source → input gain → input analyser → [effects chain] → master gain
+    node.connect(this.inputGainNode);
+    this.inputGainNode.connect(this.analyserInput);
+
+    this.rebuildChain();
+    this.isRunning = true;
+
+    console.log('[AudioEngine] Started local source (test signal)');
+  }
+
+  /**
+   * Bypass the whole chain — effects and amp — for A/B comparison.
+   * @param {boolean} value
+   */
+  setBypassAll(value) {
+    this.bypassAll = value;
+    if (this.isRunning) this.rebuildChain();
+  }
+
   // ─── Common Methods ───────────────────────────────────────────────────
 
   /**
@@ -476,6 +523,14 @@ export class AudioEngine {
     if (this._useSAB && this._controlView) {
       Atomics.store(this._controlView, CTRL_WRITE_POS, 0);
       Atomics.store(this._controlView, CTRL_READ_POS, 0);
+    }
+
+    // Stop local source (test signal). Null it before notifying so a handler
+    // that calls back into stopInput() cannot re-enter this branch.
+    if (this._localSourceNode) {
+      try { this._localSourceNode.disconnect(); } catch (e) { /* ignore */ }
+      this._localSourceNode = null;
+      this.onLocalSourceStopped?.();
     }
 
     // Stop browser fallback
@@ -515,8 +570,8 @@ export class AudioEngine {
       try { fx.getOutputNode().disconnect(); } catch (e) { /* ignore */ }
     });
 
-    // Get only active (enabled) effects
-    const activeEffects = this.effectsChain.filter(fx => fx.enabled);
+    // Get only active (enabled) effects — none at all while globally bypassed
+    const activeEffects = this.bypassAll ? [] : this.effectsChain.filter(fx => fx.enabled);
 
     if (activeEffects.length === 0) {
       // No effects — direct connection
@@ -540,7 +595,9 @@ export class AudioEngine {
       try { this.analyserInput.connect(node); } catch (e) { /* ignore */ }
     });
 
-    console.log(`[AudioEngine] Chain rebuilt — ${activeEffects.length} active effects: ${activeEffects.map(fx => fx.name).join(' → ')}`);
+    console.log(this.bypassAll
+      ? '[AudioEngine] Chain rebuilt — bypassed (dry)'
+      : `[AudioEngine] Chain rebuilt — ${activeEffects.length} active effects: ${activeEffects.map(fx => fx.name).join(' → ')}`);
   }
 
   /**
@@ -583,6 +640,8 @@ export class AudioEngine {
       baseLatency: this.context?.baseLatency || 0,
       outputLatency: this.context?.outputLatency || 0,
       bridgeConnected: this._bridgeConnected,
+      localSource: !!this._localSourceNode,
+      bypassAll: this.bypassAll,
       transport: this._useSAB ? 'SharedArrayBuffer' : 'postMessage',
     };
   }

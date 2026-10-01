@@ -54,9 +54,12 @@ export class Tuner {
         const noteNum = 12 * (Math.log2(freq / 440));
         const roundedNote = Math.round(noteNum);
         const cents = Math.round((noteNum - roundedNote) * 100);
-        const noteIndex = ((roundedNote % 12) + 12) % 12;
+        // roundedNote is semitones from A4 — shift to MIDI before indexing the
+        // C-based name table, or every note reads three semitones sharp.
+        const midi = roundedNote + 69;
+        const noteIndex = ((midi % 12) + 12) % 12;
         const note = this._notes[noteIndex];
-        const octave = Math.floor((roundedNote + 69) / 12) - 1;
+        const octave = Math.floor(midi / 12) - 1;
         this.onUpdate(note, octave, cents, freq);
       }
 

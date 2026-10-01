@@ -940,6 +940,226 @@ body::before {
   color: var(--brass-light);
 }
 
+/* ─── Test Bench ─── */
+.test-bench {
+  position: relative;
+  margin-bottom: 24px;
+  padding: 16px 20px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.test-bench-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.test-bench-header .section-title {
+  margin-bottom: 0;
+}
+
+.test-bench-sub {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.test-bench-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.test-bench-row > label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+}
+
+#test-source {
+  flex: 1;
+  min-width: 200px;
+  max-width: 320px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#test-source:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+#test-play,
+#test-loop {
+  padding: 6px 14px;
+  font-size: 11px;
+}
+
+/* Toggle-style button (Loop) */
+.btn-toggle.active {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  background: var(--accent-cyan-dim);
+}
+
+/* A/B bypass — reads as "the chain is out of circuit" when engaged */
+.btn-bypass {
+  padding: 6px 14px;
+  font-size: 11px;
+  border-style: dashed;
+  color: var(--text-secondary);
+}
+
+.btn-bypass.active {
+  border-style: solid;
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+  background: rgba(255, 145, 0, 0.12);
+  box-shadow: 0 0 14px rgba(255, 145, 0, 0.25);
+}
+
+/* Dimmed pedalboard / amp while globally bypassed */
+.pedalboard.bypassed,
+.amp-section.bypassed {
+  opacity: 0.4;
+  filter: grayscale(0.7);
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+/* Level slider */
+.test-level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.test-level label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+}
+
+.test-level-value {
+  min-width: 22px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brass-light);
+}
+
+#test-level {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 110px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--brass-dark), var(--brass));
+  cursor: pointer;
+}
+
+#test-level::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--chrome-highlight), var(--chrome-mid));
+  border: 1px solid var(--chrome-shadow);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+#test-level::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--chrome-highlight), var(--chrome-mid));
+  border: 1px solid var(--chrome-shadow);
+}
+
+#test-level:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 4px;
+}
+
+.test-file-btn {
+  width: auto;
+  margin-top: 0;
+  padding: 6px 14px;
+  font-size: 10px;
+}
+
+/* Progress */
+.test-bench-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.test-progress {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-deepest);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.test-progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--accent-cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.test-time {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.test-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* Drop target — only visible while a file is being dragged over the panel */
+.test-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--brass);
+  border-radius: var(--radius-md);
+  background: rgba(10, 12, 20, 0.88);
+  color: var(--brass-light);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  pointer-events: none;
+}
+
+.test-bench.dragging .test-drop-hint {
+  display: flex;
+}
+
 /* ─── Footer ─── */
 .footer {
   text-align: center;
@@ -987,6 +1207,28 @@ body::before {
   .master-controls {
     flex-wrap: wrap;
     justify-content: center;
+  }
+
+  .test-bench-header {
+    flex-wrap: wrap;
+  }
+
+  .test-bench-sub {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  #test-source {
+    max-width: none;
+  }
+
+  .test-level {
+    flex: 1;
+  }
+
+  #test-level {
+    flex: 1;
+    width: auto;
   }
 }
 

@@ -7,6 +7,7 @@ import { AmpSim } from './amp-sim.js';
 import { Visualizer } from './visualizer.js';
 import { Tuner } from './tuner.js';
 import { PresetManager } from './presets.js';
+import { TestSignal, TEST_SIGNALS } from './test-signal.js';
 
 class App {
   constructor() {
@@ -15,7 +16,9 @@ class App {
     this.amp = null;
     this.visualizer = null;
     this.tuner = null;
+    this.testSignal = null;
     this.presetManager = new PresetManager();
+    this._testProgressRAF = null;
     this._knobDragState = null;
     this._audioInitialized = false;
     this._useBridge = false;
@@ -36,6 +39,7 @@ class App {
     this._setupKnobInteractions();
     this._setupBypassButtons();
     this._setupIRLoadingUI();
+    this._setupTestBench();
     this._setupVisMode();
     this._bindAllKnobs();
 
@@ -139,8 +143,12 @@ class App {
 
   /**
    * Initialize audio engine and effects. Must be called from a user gesture.
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.requestMicPermission] - false when the caller has
+   *   no use for a live input (the test bench), so no mic prompt is raised.
    */
-  async initAudio() {
+  async initAudio({ requestMicPermission = true } = {}) {
     if (this._audioInitialized) return;
 
     try {
@@ -175,6 +183,19 @@ class App {
     this.tuner = new Tuner(ctx);
     this._setupTuner();
 
+    // Create the test signal source and apply the current panel settings
+    this.testSignal = new TestSignal(ctx);
+    this.testSignal.onEnded = () => this._stopTestSignal();
+    this.testSignal.setLevel(this._testLevel());
+    this.testSignal.setLoop(document.getElementById('test-loop')?.classList.contains('active') ?? true);
+
+    // Starting a live input calls stopInput(), which tears the local source
+    // down and lands here — so the two input paths interlock for free.
+    this.engine.onLocalSourceStopped = () => {
+      this.testSignal?.stop();
+      this._syncTestBenchUI();
+    };
+
     // Set signal chain
     const chain = [
       this.effects.noisegate,
@@ -201,8 +222,12 @@ class App {
     this.visualizer.setAnalysers(this.engine.analyserInput, this.engine.analyserOutput);
     this.visualizer.setMode(document.getElementById('viz-mode')?.value || 'both');
 
-    // Re-populate devices with permission (to get real labels)
-    this._populateDevices(true).catch(e => console.warn('[App] Device enumeration failed:', e));
+    // Re-populate devices with permission (to get real labels). In bridge mode
+    // the list comes from Core Audio, so leave it alone — browser deviceIds
+    // would overwrite the numeric bridge device IDs the START button reads.
+    if (requestMicPermission && !this._useBridge) {
+      this._populateDevices(true).catch(e => console.warn('[App] Device enumeration failed:', e));
+    }
 
     // Apply the current preset to actual audio nodes
     this._applyCurrentPresetToAudio();
@@ -755,6 +780,256 @@ class App {
     input.click();
   }
 
+  // ─── Test Bench ───
+
+  /**
+   * Wire the test-signal panel. Runs before any AudioContext exists, so it only
+   * touches the DOM here — the TestSignal itself is built in initAudio().
+   */
+  _setupTestBench() {
+    const sourceSelect = document.getElementById('test-source');
+    const playBtn = document.getElementById('test-play');
+    const loopBtn = document.getElementById('test-loop');
+    const levelInput = document.getElementById('test-level');
+    const fileBtn = document.getElementById('test-load-file');
+    const bypassBtn = document.getElementById('bypass-all');
+    const panel = document.getElementById('test-bench');
+    if (!sourceSelect || !playBtn) return;
+
+    // Build the picker from the signal catalogue
+    const generated = document.createElement('optgroup');
+    generated.label = 'Generated';
+    Object.entries(TEST_SIGNALS).forEach(([kind, spec]) => {
+      const opt = document.createElement('option');
+      opt.value = kind;
+      opt.textContent = spec.label;
+      generated.appendChild(opt);
+    });
+    sourceSelect.appendChild(generated);
+
+    const fileGroup = document.createElement('optgroup');
+    fileGroup.label = 'Your audio';
+    this._fileOption = document.createElement('option');
+    this._fileOption.value = 'file';
+    this._fileOption.textContent = 'Audio file — none loaded';
+    this._fileOption.disabled = true;
+    fileGroup.appendChild(this._fileOption);
+    sourceSelect.appendChild(fileGroup);
+
+    this._updateTestHint();
+
+    sourceSelect.addEventListener('change', () => {
+      this._updateTestHint();
+      // Changing source mid-playback swaps straight to the new material
+      if (this.testSignal?.isPlaying) this._playTestSignal();
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (this.testSignal?.isPlaying) this._stopTestSignal();
+      else this._playTestSignal();
+    });
+
+    loopBtn?.addEventListener('click', () => {
+      const active = loopBtn.classList.toggle('active');
+      loopBtn.setAttribute('aria-pressed', String(active));
+      this.testSignal?.setLoop(active);
+    });
+
+    levelInput?.addEventListener('input', () => {
+      const readout = document.getElementById('test-level-value');
+      if (readout) readout.textContent = levelInput.value;
+      this.testSignal?.setLevel(this._testLevel());
+    });
+
+    fileBtn?.addEventListener('click', () => this._pickTestFile());
+
+    // Drop an audio file anywhere on the panel
+    if (panel) {
+      ['dragenter', 'dragover'].forEach(ev => panel.addEventListener(ev, (e) => {
+        e.preventDefault();
+        panel.classList.add('dragging');
+      }));
+      ['dragleave', 'dragend'].forEach(ev => panel.addEventListener(ev, () => {
+        panel.classList.remove('dragging');
+      }));
+      panel.addEventListener('drop', (e) => {
+        e.preventDefault();
+        panel.classList.remove('dragging');
+        const file = e.dataTransfer?.files?.[0];
+        if (file) this._loadTestFile(file);
+      });
+    }
+
+    // A/B: bypass every pedal and the amp without disturbing their own state
+    bypassBtn?.addEventListener('click', () => {
+      const active = bypassBtn.classList.toggle('active');
+      bypassBtn.setAttribute('aria-pressed', String(active));
+      this.engine.setBypassAll(active);
+      document.querySelector('.pedalboard')?.classList.toggle('bypassed', active);
+      document.querySelector('.amp-section')?.classList.toggle('bypassed', active);
+    });
+  }
+
+  /** Level slider position as a 0–1 gain. */
+  _testLevel() {
+    const el = document.getElementById('test-level');
+    return el ? parseInt(el.value, 10) / 100 : 0.35;
+  }
+
+  _updateTestHint() {
+    const hintEl = document.getElementById('test-hint');
+    if (!hintEl) return;
+    const kind = document.getElementById('test-source')?.value;
+    if (kind === 'file') {
+      hintEl.textContent = this.testSignal?.fileName
+        ? `Your file: ${this.testSignal.fileName}`
+        : 'Load an audio file to use this source.';
+    } else {
+      hintEl.textContent = TEST_SIGNALS[kind]?.hint || '';
+    }
+  }
+
+  _pickTestFile() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'audio/*,.wav,.mp3,.ogg,.aiff,.aif,.m4a,.flac';
+    input.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) this._loadTestFile(file);
+    });
+    input.click();
+  }
+
+  /**
+   * Decode a user-supplied audio file and select it as the test source.
+   * @param {File} file
+   */
+  async _loadTestFile(file) {
+    if (!this._audioInitialized) await this.initAudio({ requestMicPermission: false });
+    if (!this.testSignal) return;
+
+    const label = document.getElementById('test-file-label');
+    const previous = label?.textContent;
+    if (label) label.textContent = 'Decoding…';
+
+    try {
+      const info = await this.testSignal.loadFile(file);
+      if (label) label.textContent = info.name.length > 26 ? `${info.name.slice(0, 25)}…` : info.name;
+      if (this._fileOption) {
+        this._fileOption.disabled = false;
+        this._fileOption.textContent = `${info.name} (${info.duration.toFixed(1)}s)`;
+      }
+      const sourceSelect = document.getElementById('test-source');
+      if (sourceSelect) sourceSelect.value = 'file';
+      this._updateTestHint();
+      console.log(`[App] Test file loaded — ${info.name}, ${info.duration.toFixed(2)}s`);
+
+      // Already playing? Swap straight over to the new file.
+      if (this.testSignal.isPlaying) this._playTestSignal();
+    } catch (e) {
+      console.error('[App] Could not decode audio file:', e);
+      if (label) label.textContent = previous || 'Load audio file…';
+      alert(`Could not decode "${file.name}". Try a WAV, MP3, M4A or FLAC file.`);
+    }
+  }
+
+  /**
+   * Patch the test signal into the chain in place of a live input and play it.
+   */
+  async _playTestSignal() {
+    if (!this._audioInitialized) await this.initAudio({ requestMicPermission: false });
+    if (!this.testSignal) return;
+
+    const kind = document.getElementById('test-source')?.value;
+    if (kind === 'file' && !this.testSignal.hasFile) {
+      this._pickTestFile();
+      return;
+    }
+
+    try {
+      // Also stops any live input — the two paths are mutually exclusive
+      await this.engine.startFromLocalSource(this.testSignal.getOutputNode());
+    } catch (e) {
+      console.error('[App] Could not start test signal:', e);
+      return;
+    }
+
+    this.testSignal.setLevel(this._testLevel());
+    if (!this.testSignal.play(kind)) {
+      this.engine.stopInput();
+      return;
+    }
+
+    if (this.visualizer) this.visualizer.start();
+    document.getElementById('status-dot')?.classList.add('live');
+
+    // The live input is no longer running, so its button goes back to START
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn) {
+      startBtn.textContent = '▶ START';
+      startBtn.classList.remove('active');
+    }
+
+    this._syncTestBenchUI();
+    this._startTestProgress();
+    this._updateStateUI();
+  }
+
+  _stopTestSignal() {
+    this.testSignal?.stop();
+    // Only tear the route down if the test signal is what is running
+    if (this.engine.getState().localSource) this.engine.stopInput();
+    if (this.visualizer) this.visualizer.stop();
+    document.getElementById('status-dot')?.classList.remove('live');
+    this._stopTestProgress();
+    this._syncTestBenchUI();
+    this._updateStateUI();
+  }
+
+  _syncTestBenchUI() {
+    const playing = !!this.testSignal?.isPlaying;
+    const btn = document.getElementById('test-play');
+    if (btn) {
+      btn.textContent = playing ? '⏹ STOP' : '▶ PLAY';
+      btn.classList.toggle('active', playing);
+    }
+    if (!playing) {
+      const fill = document.getElementById('test-progress-fill');
+      if (fill) fill.style.width = '0%';
+      const time = document.getElementById('test-time');
+      if (time) time.textContent = '0:00 / 0:00';
+    }
+  }
+
+  _startTestProgress() {
+    this._stopTestProgress();
+    const fill = document.getElementById('test-progress-fill');
+    const timeEl = document.getElementById('test-time');
+
+    const tick = () => {
+      if (!this.testSignal?.isPlaying) {
+        this._testProgressRAF = null;
+        return;
+      }
+      const dur = this.testSignal.duration;
+      const pos = this.testSignal.getProgress() * dur;
+      if (fill) fill.style.width = `${(dur ? (pos / dur) * 100 : 0).toFixed(1)}%`;
+      if (timeEl) timeEl.textContent = `${this._formatTime(pos)} / ${this._formatTime(dur)}`;
+      this._testProgressRAF = requestAnimationFrame(tick);
+    };
+    this._testProgressRAF = requestAnimationFrame(tick);
+  }
+
+  _stopTestProgress() {
+    if (this._testProgressRAF) cancelAnimationFrame(this._testProgressRAF);
+    this._testProgressRAF = null;
+  }
+
+  _formatTime(seconds) {
+    const s = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
   // ─── Visualizer Mode ───
   _setupVisMode() {
     const vizMode = document.getElementById('viz-mode');
@@ -769,9 +1044,13 @@ class App {
     const state = this.engine.getState();
     const statusText = document.getElementById('status-text');
     if (statusText) {
-      statusText.textContent = state.isRunning
-        ? `Live — ${state.sampleRate}Hz — Latency: ${(state.baseLatency * 1000).toFixed(1)}ms — ${state.transport}`
-        : 'Stopped';
+      if (!state.isRunning) {
+        statusText.textContent = 'Stopped';
+      } else if (state.localSource) {
+        statusText.textContent = `Test signal — ${state.sampleRate}Hz`;
+      } else {
+        statusText.textContent = `Live — ${state.sampleRate}Hz — Latency: ${(state.baseLatency * 1000).toFixed(1)}ms — ${state.transport}`;
+      }
     }
   }
 
@@ -829,7 +1108,10 @@ document.addEventListener('DOMContentLoaded', () => {
       await app.initAudio();
     }
 
-    if (app.engine.isRunning) {
+    // Only act as STOP for a live input — if the test bench is what is playing,
+    // START takes over from it (startFromBridge/start stop it on the way in).
+    const state = app.engine.getState();
+    if (state.isRunning && !state.localSource) {
       app.engine.stopInput();
       if (app.visualizer) app.visualizer.stop();
       startBtn.textContent = '▶ START';
@@ -848,6 +1130,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           // Fallback to browser getUserMedia
           await app.engine.start(deviceId);
+          // Permission is granted now, so the device list can show real labels
+          app._populateDevices(true).catch(() => {});
         }
         if (app.visualizer) app.visualizer.start();
         startBtn.textContent = '⏹ STOP';
