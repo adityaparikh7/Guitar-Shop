@@ -1,26 +1,26 @@
 /* ═══════════════════════════════════════════════════════
-   GUITAR SHOP — Premium Dark Theme Stylesheet
+   GUITAR SHOP — Hardware Stompbox & Amp Head Stylesheet
    ═══════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&family=Oswald:wght@500;600;700&display=swap');
 
 /* ─── CSS Variables ─── */
 :root {
   --bg-deepest: #05060a;
   --bg-dark: #0a0c14;
-  --bg-panel: #0f1220;
-  --bg-pedal: #151929;
-  --bg-surface: #1a1f35;
-  --bg-elevated: #222842;
+  --bg-panel: #1a1712;
+  --bg-pedal: #232323;
+  --bg-surface: #221f18;
+  --bg-elevated: #2c2820;
 
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-medium: rgba(255, 255, 255, 0.1);
-  --border-bright: rgba(255, 255, 255, 0.15);
+  --border-subtle: rgba(255, 250, 240, 0.06);
+  --border-medium: rgba(255, 250, 240, 0.1);
+  --border-bright: rgba(255, 250, 240, 0.16);
 
-  --text-primary: #e8eaf6;
-  --text-secondary: #9fa8da;
-  --text-muted: #5c6291;
-  --text-label: #7986cb;
+  --text-primary: #f2ede2;
+  --text-secondary: #b8ae9c;
+  --text-muted: #746b5c;
+  --text-label: #c9a86b;
 
   --accent-cyan: #00e5ff;
   --accent-cyan-dim: rgba(0, 229, 255, 0.15);
@@ -39,10 +39,63 @@
   --radius-md: 10px;
   --radius-lg: 16px;
   --radius-xl: 20px;
+  --radius-pedal: 6px;
+  --radius-amp: 10px;
 
-  --shadow-pedal: 0 4px 24px rgba(0, 0, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.3);
-  --shadow-knob: 0 2px 8px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255,255,255,0.05);
-  --shadow-amp: 0 8px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* ── Tolex / vinyl covering ── */
+  --tolex-black: #18140f;
+  --tolex-black-hi: #2a241c;
+  --tolex-black-lo: #0c0a07;
+
+  /* ── Pedal enclosure paint base ── */
+  --enclosure-base: #232323;
+  --enclosure-hi: #3c3c3c;
+  --enclosure-lo: #101010;
+
+  /* ── Chrome / brushed aluminum ── */
+  --chrome-highlight: #f4f6f8;
+  --chrome-base: #c7ccd2;
+  --chrome-mid: #8a8f97;
+  --chrome-shadow: #45484e;
+  --chrome-deep: #202226;
+
+  /* ── Brass hardware accents ── */
+  --brass-light: #e8c78a;
+  --brass: #b8935a;
+  --brass-dark: #7a5c31;
+
+  /* ── Cream control plate ── */
+  --plate-cream: #ece3d0;
+  --plate-cream-shadow: #cfc3a5;
+  --plate-ink: #2a2015;
+
+  /* ── LEDs (real stompbox convention) ── */
+  --led-red: #ff2d2d;
+  --led-red-glow: 0 0 4px rgba(255, 45, 45, .9), 0 0 14px rgba(255, 45, 45, .55);
+  --led-green: #26ff77;
+  --led-green-glow: 0 0 4px rgba(38, 255, 119, .9), 0 0 14px rgba(38, 255, 119, .5);
+  --led-amber: #ffb020;
+  --led-amber-glow: 0 0 4px rgba(255, 176, 32, .9), 0 0 14px rgba(255, 176, 32, .5);
+
+  /* ── Pedal category tints ── */
+  --cat-dynamics: #33383f;    --cat-dynamics-hi: #4a5058;    --cat-dynamics-lo: #1c2024;
+  --cat-filter: #d98e1f;      --cat-filter-hi: #f0ab3f;      --cat-filter-lo: #8f5a10;
+  --cat-drive-low: #2fa84f;   --cat-drive-low-hi: #4fc96f;   --cat-drive-low-lo: #1c6b32;
+  --cat-drive-mid: #e0a222;   --cat-drive-mid-hi: #f4c04a;   --cat-drive-mid-lo: #94660f;
+  --cat-drive-hi: #b0261e;    --cat-drive-hi-hi: #d94a3f;    --cat-drive-hi-lo: #6e130d;
+  --cat-mod: #4a4fc4;         --cat-mod-hi: #6d72e0;         --cat-mod-lo: #2c2f80;
+  --cat-time: #1f8a78;        --cat-time-hi: #3aab97;        --cat-time-lo: #0f5349;
+  --cat-eq: #37414f;          --cat-eq-hi: #4f5c6e;          --cat-eq-lo: #202730;
+
+  /* Noise/grain overlay — inline SVG data-URI, no binary asset */
+  --noise-overlay: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+
+  --shadow-pedal: inset 0 1px 0 rgba(255,255,255,.12), inset 0 -10px 18px rgba(0,0,0,.45), 0 2px 3px rgba(0,0,0,.5), 0 10px 22px rgba(0,0,0,.55);
+  --shadow-pedal-hover: inset 0 1px 0 rgba(255,255,255,.14), inset 0 -10px 18px rgba(0,0,0,.45), 0 3px 5px rgba(0,0,0,.55), 0 16px 30px rgba(0,0,0,.6);
+  --shadow-knob: inset 0 2px 3px rgba(255,255,255,.25), inset 0 -3px 5px rgba(0,0,0,.6), 0 3px 6px rgba(0,0,0,.55), 0 0 0 2px var(--enclosure-lo);
+  --shadow-amp: inset 0 1px 0 rgba(255,255,255,.06), inset 0 -14px 26px rgba(0,0,0,.5), 0 4px 8px rgba(0,0,0,.5), 0 20px 44px rgba(0,0,0,.6);
+  --shadow-footswitch: 0 0 0 3px var(--chrome-deep), inset 0 2px 3px rgba(255,255,255,.4), inset 0 -4px 6px rgba(0,0,0,.5), 0 4px 6px rgba(0,0,0,.5);
+  --shadow-footswitch-active: 0 0 0 3px var(--chrome-deep), 0 0 16px 3px rgba(255,45,45,.55), inset 0 3px 6px rgba(0,0,0,.6);
 }
 
 /* ─── Reset ─── */
@@ -50,7 +103,7 @@
 
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background: var(--bg-deepest);
+  background: var(--tolex-black);
   color: var(--text-primary);
   min-height: 100vh;
   overflow-x: hidden;
@@ -63,9 +116,10 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(ellipse at 20% 20%, rgba(68, 138, 255, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 80%, rgba(124, 77, 255, 0.04) 0%, transparent 50%),
-    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.008) 2px, rgba(255,255,255,0.008) 3px);
+    var(--noise-overlay),
+    radial-gradient(ellipse at 50% -10%, rgba(255, 255, 255, 0.035) 0%, transparent 60%);
+  background-blend-mode: overlay, normal;
+  opacity: 0.55;
   pointer-events: none;
   z-index: 0;
 }
@@ -79,8 +133,8 @@ body::before {
   align-items: center;
   justify-content: space-between;
   padding: 12px 28px;
-  background: rgba(10, 12, 20, 0.85);
-  backdrop-filter: blur(20px) saturate(1.4);
+  background: rgba(20, 17, 12, 0.9);
+  backdrop-filter: blur(20px) saturate(1.2);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -91,14 +145,13 @@ body::before {
 }
 
 .header-brand .logo {
-  font-family: 'Instrument Serif', serif;
-  font-size: 26px;
-  font-style: italic;
-  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  letter-spacing: -0.5px;
+  font-family: 'Oswald', 'Instrument Serif', sans-serif;
+  font-weight: 700;
+  font-size: 22px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--brass-light);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6), 0 0 10px rgba(184, 147, 90, 0.25);
 }
 
 .header-brand .tagline {
@@ -166,20 +219,31 @@ body::before {
   transition: all 0.2s ease;
 }
 
+.btn svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
 .btn:hover {
   background: var(--bg-surface);
   border-color: var(--border-bright);
 }
 
+.btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
 .btn-primary {
-  background: linear-gradient(135deg, rgba(0, 229, 255, 0.15), rgba(124, 77, 255, 0.15));
-  border-color: var(--accent-cyan);
-  color: var(--accent-cyan);
+  background: linear-gradient(135deg, rgba(232, 199, 138, 0.16), rgba(255, 176, 32, 0.12));
+  border-color: var(--brass);
+  color: var(--brass-light);
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, rgba(0, 229, 255, 0.25), rgba(124, 77, 255, 0.25));
-  box-shadow: var(--glow-cyan);
+  background: linear-gradient(135deg, rgba(232, 199, 138, 0.26), rgba(255, 176, 32, 0.2));
+  box-shadow: 0 0 16px rgba(184, 147, 90, 0.3);
 }
 
 .btn-primary.active {
@@ -347,6 +411,10 @@ body::before {
 /* ─── Pedalboard ─── */
 .pedalboard {
   margin-bottom: 24px;
+  padding: 20px;
+  border-radius: var(--radius-amp);
+  background: repeating-linear-gradient(90deg, #1c150d 0 6px, #241a10 6px 12px);
+  box-shadow: inset 0 2px 14px rgba(0, 0, 0, 0.6), inset 0 -2px 8px rgba(0, 0, 0, 0.4);
 }
 
 .section-title {
@@ -365,61 +433,98 @@ body::before {
   gap: 16px;
 }
 
-/* ─── Pedal ─── */
+/* ─── Pedal (die-cast stompbox enclosure) ─── */
 .pedal {
-  background: var(--bg-pedal);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: 20px 16px 16px;
+  --cat: var(--enclosure-base);
+  --cat-hi: var(--enclosure-hi);
+  --cat-lo: var(--enclosure-lo);
+  background: linear-gradient(135deg, var(--cat-hi), var(--cat) 55%, var(--cat-lo));
+  border-radius: var(--radius-pedal);
+  padding: 22px 16px 18px;
   position: relative;
   box-shadow: var(--shadow-pedal);
-  transition: all 0.3s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
   overflow: hidden;
 }
 
+/* paint sheen + recessed bottom shading + grain */
 .pedal::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 40%);
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.16) 0%, transparent 22%),
+    linear-gradient(180deg, transparent 62%, rgba(0, 0, 0, 0.42) 100%),
+    var(--noise-overlay);
+  background-blend-mode: normal, normal, overlay;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* four corner mounting screws */
+.pedal::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle 5px at 13px 13px, var(--chrome-highlight) 0%, var(--chrome-mid) 65%, transparent 78%),
+    radial-gradient(circle 5px at calc(100% - 13px) 13px, var(--chrome-highlight) 0%, var(--chrome-mid) 65%, transparent 78%),
+    radial-gradient(circle 5px at 13px calc(100% - 13px), var(--chrome-highlight) 0%, var(--chrome-mid) 65%, transparent 78%),
+    radial-gradient(circle 5px at calc(100% - 13px) calc(100% - 13px), var(--chrome-highlight) 0%, var(--chrome-mid) 65%, transparent 78%);
   border-radius: inherit;
   pointer-events: none;
 }
 
 .pedal:hover {
-  border-color: var(--border-medium);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-pedal), 0 8px 32px rgba(0,0,0,0.3);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-pedal-hover);
 }
+
+/* ── Category tints (real-pedal color convention) ── */
+.pedal--dynamics { --cat: var(--cat-dynamics); --cat-hi: var(--cat-dynamics-hi); --cat-lo: var(--cat-dynamics-lo); }
+.pedal--filter   { --cat: var(--cat-filter);   --cat-hi: var(--cat-filter-hi);   --cat-lo: var(--cat-filter-lo); }
+.pedal--drive-low{ --cat: var(--cat-drive-low);--cat-hi: var(--cat-drive-low-hi);--cat-lo: var(--cat-drive-low-lo); }
+.pedal--drive-mid{ --cat: var(--cat-drive-mid);--cat-hi: var(--cat-drive-mid-hi);--cat-lo: var(--cat-drive-mid-lo); }
+.pedal--drive-hi { --cat: var(--cat-drive-hi); --cat-hi: var(--cat-drive-hi-hi); --cat-lo: var(--cat-drive-hi-lo); }
+.pedal--mod      { --cat: var(--cat-mod);      --cat-hi: var(--cat-mod-hi);      --cat-lo: var(--cat-mod-lo); }
+.pedal--time     { --cat: var(--cat-time);     --cat-hi: var(--cat-time-hi);     --cat-lo: var(--cat-time-lo); }
+.pedal--eq       { --cat: var(--cat-eq);       --cat-hi: var(--cat-eq-hi);       --cat-lo: var(--cat-eq-lo); }
 
 .pedal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 16px;
+  position: relative;
+  z-index: 1;
 }
 
+/* engraved nameplate — flat scrim so text stays legible on any category color */
 .pedal-name {
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 2px;
-  color: var(--text-label);
+  letter-spacing: 1.5px;
+  color: var(--brass-light);
+  background: rgba(0, 0, 0, 0.38);
+  padding: 3px 8px;
+  border-radius: 3px;
+  white-space: nowrap;
 }
 
 .pedal-led {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  transition: all 0.3s ease;
+  background: radial-gradient(circle at 35% 30%, #3a3a3a, #101010 70%);
+  box-shadow: inset 0 0 0 1px var(--chrome-shadow), inset 0 -1px 2px rgba(0, 0, 0, 0.6);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
 }
 
 .pedal-led.on {
-  background: var(--accent-green);
-  border-color: var(--accent-green);
-  box-shadow: var(--glow-green);
+  background: radial-gradient(circle at 35% 30%, #fff, var(--led-red) 55%, #7a0000 100%);
+  box-shadow: var(--led-red-glow), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 
 .pedal-knobs {
@@ -428,6 +533,8 @@ body::before {
   gap: 12px;
   justify-content: center;
   margin-bottom: 16px;
+  position: relative;
+  z-index: 1;
 }
 
 .knob-wrapper {
@@ -437,22 +544,33 @@ body::before {
   gap: 6px;
 }
 
-/* ─── Knob ─── */
+/* value/label chips — only inside .pedal, where the background color varies by category */
+.pedal .knob-label,
+.pedal .knob-value {
+  background: rgba(0, 0, 0, 0.45);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--text-primary);
+}
+
+/* ─── Knob (knurled aluminum cap) ─── */
 .knob {
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: radial-gradient(circle at 40% 35%, #2a3050, #141828);
-  border: 2px solid rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 42%),
+    repeating-conic-gradient(from 0deg, var(--chrome-base) 0deg 4deg, var(--chrome-mid) 4deg 8deg),
+    radial-gradient(circle at 50% 50%, var(--chrome-deep) 0%, var(--chrome-deep) 60%, transparent 61%);
   box-shadow: var(--shadow-knob);
   cursor: grab;
   position: relative;
   user-select: none;
-  transition: border-color 0.2s ease;
+  transition: filter 0.2s ease;
 }
 
 .knob:hover {
-  border-color: var(--accent-cyan);
+  filter: brightness(1.08);
 }
 
 .knob:active {
@@ -463,14 +581,14 @@ body::before {
   position: absolute;
   top: 4px;
   left: 50%;
-  width: 2px;
+  width: 3px;
   height: 16px;
-  background: var(--accent-cyan);
+  background: linear-gradient(180deg, var(--plate-cream), var(--chrome-base));
   transform-origin: bottom center;
   transform: rotate(-135deg);
   border-radius: 1px;
-  margin-left: -1px;
-  box-shadow: 0 0 6px rgba(0, 229, 255, 0.4);
+  margin-left: -1.5px;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.7);
   transition: transform 0.05s linear;
 }
 
@@ -488,33 +606,37 @@ body::before {
   font-weight: 500;
 }
 
-/* ─── Bypass Button ─── */
+/* ─── Bypass Footswitch ─── */
 .bypass-btn {
-  width: 100%;
-  padding: 8px;
-  border: 1px solid var(--border-medium);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--text-muted);
-  font-family: 'Inter', sans-serif;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
+  display: block;
+  width: 46px;
+  height: 46px;
+  margin: 4px auto 0;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 30%, var(--chrome-highlight), var(--chrome-mid) 55%, var(--chrome-shadow) 100%);
+  box-shadow: var(--shadow-footswitch);
+  color: transparent;
+  font-size: 0;
   cursor: pointer;
-  transition: all 0.2s ease;
+  position: relative;
+  z-index: 1;
+  transition: transform 150ms ease, box-shadow 150ms ease, filter 150ms ease;
 }
 
 .bypass-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: var(--border-bright);
+  filter: brightness(1.1);
+}
+
+.bypass-btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 3px;
 }
 
 .bypass-btn.active {
-  background: rgba(0, 230, 118, 0.1);
-  border-color: var(--accent-green);
-  color: var(--accent-green);
-  box-shadow: 0 0 12px rgba(0, 230, 118, 0.15);
+  transform: translateY(2px) scale(0.96);
+  box-shadow: var(--shadow-footswitch-active);
+  transition: transform 80ms ease-out, box-shadow 220ms ease;
 }
 
 /* IR Load button */
@@ -532,13 +654,38 @@ body::before {
   text-transform: uppercase;
   letter-spacing: 1px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   transition: all 0.2s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.ir-btn svg {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
 }
 
 .ir-btn:hover {
-  border-color: var(--accent-purple);
-  color: var(--accent-purple);
-  background: rgba(124, 77, 255, 0.05);
+  border-color: var(--brass);
+  color: var(--brass-light);
+  background: rgba(184, 147, 90, 0.08);
+}
+
+/* inside a colored pedal enclosure, back it with a solid chip for contrast */
+.pedal .ir-btn {
+  background: rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--text-primary);
+}
+
+.pedal .ir-btn:hover {
+  border-color: var(--brass-light);
+  color: var(--brass-light);
+  background: rgba(0, 0, 0, 0.55);
 }
 
 /* ─── Amp Section ─── */
@@ -547,22 +694,27 @@ body::before {
 }
 
 .amp-panel {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-amp);
   padding: 28px;
   box-shadow: var(--shadow-amp);
   position: relative;
   overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.16) 0 2px, transparent 2px 6px),
+    linear-gradient(180deg, var(--tolex-black-hi), var(--tolex-black) 40%, var(--tolex-black-lo));
 }
 
+/* grille-cloth crosshatch + grain */
 .amp-panel::before {
   content: '';
   position: absolute;
   inset: 0;
   background:
-    repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.005) 3px, rgba(255,255,255,0.005) 4px),
-    linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 30%);
+    var(--noise-overlay),
+    repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.5) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0.5) 0 1px, transparent 1px 3px);
+  background-blend-mode: overlay, normal, normal;
+  opacity: 0.5;
   pointer-events: none;
   border-radius: inherit;
 }
@@ -572,13 +724,22 @@ body::before {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 24px;
+  padding: 10px 18px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--chrome-highlight), var(--chrome-base) 45%, var(--chrome-shadow));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -2px 4px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.4);
+  position: relative;
+  z-index: 1;
 }
 
 .amp-title {
-  font-family: 'Instrument Serif', serif;
-  font-size: 22px;
-  font-style: italic;
-  color: var(--accent-cyan);
+  font-family: 'Oswald', sans-serif;
+  font-weight: 700;
+  font-size: 19px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--plate-ink);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .amp-model-selector {
@@ -592,7 +753,7 @@ body::before {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1.5px;
-  color: var(--text-muted);
+  color: var(--plate-ink);
 }
 
 .amp-model-selector select {
@@ -616,6 +777,8 @@ body::before {
   justify-content: center;
   gap: 28px;
   flex-wrap: wrap;
+  position: relative;
+  z-index: 1;
 }
 
 .amp-knob-wrapper {
@@ -623,11 +786,30 @@ body::before {
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  position: relative;
+}
+
+/* static chicken-head skirt, sits behind the knob cap */
+.amp-knob-wrapper::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  width: 72px;
+  height: 72px;
+  transform: translateX(-50%);
+  background: linear-gradient(145deg, var(--chrome-mid), var(--chrome-deep) 65%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+  clip-path: polygon(50% 0%, 61% 8%, 68% 22%, 100% 30%, 82% 42%, 82% 58%, 100% 70%, 68% 78%, 61% 92%, 50% 100%, 39% 92%, 32% 78%, 0% 70%, 18% 58%, 18% 42%, 0% 30%, 32% 22%, 39% 8%);
+  z-index: 0;
+  pointer-events: none;
 }
 
 .amp-knob-wrapper .knob {
   width: 56px;
   height: 56px;
+  position: relative;
+  z-index: 1;
 }
 
 .amp-knob-wrapper .knob-indicator {
@@ -648,6 +830,8 @@ body::before {
   align-items: center;
   justify-content: center;
   gap: 12px;
+  position: relative;
+  z-index: 1;
 }
 
 /* ─── Visualizer ─── */
@@ -753,7 +937,7 @@ body::before {
 }
 
 .master-controls .knob-wrapper .knob-label {
-  color: var(--accent-cyan);
+  color: var(--brass-light);
 }
 
 /* ─── Footer ─── */
@@ -765,7 +949,7 @@ body::before {
 }
 
 .footer a {
-  color: var(--accent-cyan);
+  color: var(--brass);
   text-decoration: none;
 }
 
@@ -835,10 +1019,31 @@ body::before {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 10px;
-  transition: transform 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s, color 0.2s;
+}
+
+.pedal-preset-save svg {
+  width: 11px;
+  height: 11px;
 }
 
 .pedal-preset-save:hover {
   transform: scale(1.2);
+  color: var(--brass-light);
+}
+
+/* ─── Reduced motion ─── */
+@media (prefers-reduced-motion: reduce) {
+  .pedal,
+  .knob-indicator,
+  .bypass-btn,
+  .bypass-btn.active,
+  .pedal-led,
+  .status-dot.live {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
