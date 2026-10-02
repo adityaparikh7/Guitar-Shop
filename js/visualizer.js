@@ -18,10 +18,14 @@ export class Visualizer {
 
   _resize() {
     const rect = this.canvas.parentElement.getBoundingClientRect();
-    this.canvas.width = rect.width;
-    this.canvas.height = rect.height;
-    this.W = this.canvas.width;
-    this.H = this.canvas.height;
+    // Back the canvas with real device pixels, then draw in CSS pixels — a
+    // 1:1 bitmap is visibly soft on any retina display.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.W = rect.width;
+    this.H = rect.height;
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   setAnalysers(input, output) {
@@ -29,10 +33,11 @@ export class Visualizer {
     this.analyserOutput = output;
     if (input) {
       this._inputData = new Float32Array(input.fftSize);
-      this._freqData = new Uint8Array(input.frequencyBinCount);
     }
     if (output) {
       this._outputData = new Float32Array(output.fftSize);
+      // Sized from the analyser it is actually read from.
+      this._freqData = new Uint8Array(output.frequencyBinCount);
     }
   }
 
@@ -61,6 +66,11 @@ export class Visualizer {
     const { ctx, W, H } = this;
     ctx.fillStyle = '#141210';
     ctx.fillRect(0, 0, W, H);
+
+    // One time-domain read per frame, shared by the waveform and the VU meter.
+    if (this.analyserOutput && this._outputData) {
+      this.analyserOutput.getFloatTimeDomainData(this._outputData);
+    }
 
     // Draw grid
     this._drawGrid();
@@ -94,7 +104,6 @@ export class Visualizer {
 
   _drawWaveform() {
     if (!this.analyserOutput || !this._outputData) return;
-    this.analyserOutput.getFloatTimeDomainData(this._outputData);
     const { ctx, W, H } = this;
     const data = this._outputData;
     const step = Math.floor(data.length / W) || 1;
@@ -121,23 +130,23 @@ export class Visualizer {
     this.analyserOutput.getByteFrequencyData(this._freqData);
     const { ctx, W, H } = this;
     const data = this._freqData;
-    const barW = W / data.length * 2.5;
+    // Span the full width: the old 2.5x bar width ran off the canvas and threw
+    // away everything above roughly 9kHz.
+    const barW = W / data.length;
 
     for (let i = 0; i < data.length; i++) {
       const v = data[i] / 255;
       const barH = v * H * 0.8;
       const x = i * barW;
-      if (x > W) break;
 
       const hue = 45 - v * 45;
       ctx.fillStyle = `hsla(${hue}, 90%, ${40 + v * 30}%, 0.7)`;
-      ctx.fillRect(x, H - barH, barW - 1, barH);
+      ctx.fillRect(x, H - barH, Math.max(1, barW - 0.5), barH);
     }
   }
 
   _drawVU() {
     if (!this.analyserOutput || !this._outputData) return;
-    this.analyserOutput.getFloatTimeDomainData(this._outputData);
     const { ctx, W, H } = this;
 
     // Calculate RMS

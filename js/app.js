@@ -9,6 +9,9 @@ import { Tuner } from './tuner.js';
 import { PresetManager } from './presets.js';
 import { TestSignal, TEST_SIGNALS } from './test-signal.js';
 
+// Level logging and buffer-health reports are opt-in: append ?debug to the URL.
+const DEBUG = new URLSearchParams(location.search).has('debug');
+
 class App {
   constructor() {
     this.engine = new AudioEngine();
@@ -23,10 +26,7 @@ class App {
     this._audioInitialized = false;
     this._useBridge = false;
     this._bridgeDevices = [];
-
-    // Pending state: track bypass/knob states before audio init
-    this._pendingBypass = {};
-    this._pendingKnobValues = {};
+    this._monitorTimer = null;
   }
 
   /**
@@ -41,6 +41,7 @@ class App {
     this._setupIRLoadingUI();
     this._setupTestBench();
     this._setupVisMode();
+    this._setupTunerButton();
     this._bindAllKnobs();
 
     // Try bridge first, fall back to browser device enumeration
@@ -82,14 +83,21 @@ class App {
     const bridgeAvailable = await this.engine.isBridgeAvailable();
     const bridgeLabel = document.getElementById('bridge-text');
 
+    // Per-channel capture only exists on the bridge; getUserMedia hands back
+    // whatever the device's default is, so showing the control in browser mode
+    // promises something the app cannot deliver.
+    const channelGroup = document.getElementById('channel-group');
+
     if (bridgeAvailable) {
       this._useBridge = true;
       if (bridgeLabel) bridgeLabel.textContent = 'Bridge online';
+      if (channelGroup) channelGroup.hidden = false;
       const dot = document.getElementById('bridge-dot');
       if (dot) dot.classList.add('live');
       await this._populateBridgeDevices();
     } else {
       this._useBridge = false;
+      if (channelGroup) channelGroup.hidden = true;
       if (bridgeLabel) bridgeLabel.textContent = 'Bridge offline — using browser audio';
       // Fall back to browser enumeration
       this._populateDevices(false).catch(e => console.warn('[App] Device enumeration failed:', e));
@@ -229,12 +237,21 @@ class App {
       this._populateDevices(true).catch(e => console.warn('[App] Device enumeration failed:', e));
     }
 
+    // Mark initialised before applying state: _applyCurrentPresetToAudio and
+    // the param setters all bail out when this is false, so setting it
+    // afterwards meant the preset on screen was never pushed into the nodes —
+    // every pedal showed as lit while the graph had it switched off.
+    this._audioInitialized = true;
+
     // Apply the current preset to actual audio nodes
     this._applyCurrentPresetToAudio();
 
-    this._audioInitialized = true;
+    // The engine's own gain defaults and the knob positions in the markup are
+    // set independently, so push the knobs in — otherwise the Input knob reads
+    // one thing and the graph does another until the knob is first touched.
+    this._applyMasterKnobsToAudio();
 
-    // Start signal monitor for debugging
+    // Level logging, when asked for
     this._startSignalMonitor();
 
     console.log(`[App] Audio engine initialized — sampleRate: ${ctx.sampleRate}`);
@@ -275,9 +292,11 @@ class App {
     effectNames.forEach(name => {
       const btn = document.getElementById(`${name}-bypass`);
       if (!btn) return;
+      btn.setAttribute('aria-pressed', String(btn.classList.contains('active')));
       btn.addEventListener('click', () => {
         // Toggle UI state
         const isActive = btn.classList.toggle('active');
+        btn.setAttribute('aria-pressed', String(isActive));
         const led = document.getElementById(`${name}-led`);
         if (led) led.classList.toggle('on', isActive);
 
@@ -291,7 +310,6 @@ class App {
           this.effects[name].enabled = isActive;
           this.engine.rebuildChain();
         }
-        this._pendingBypass[name] = isActive;
       });
     });
   }
@@ -321,9 +339,7 @@ class App {
       if (this._audioInitialized) this.engine.setMasterVolume(v);
     });
     this._bindKnob('input-gain', (v) => {
-      // Exponential curve: 0 → 0, 0.5 → ~10, 1.0 → 100
-      const gain = v * v * 100;
-      if (this._audioInitialized) this.engine.setInputGain(gain);
+      if (this._audioInitialized) this.engine.setInputGain(this._inputGainFor(v));
     });
 
     // Noise Gate
@@ -391,36 +407,113 @@ class App {
     }
   }
 
+  /**
+   * Input trim, 0–1 knob to a linear gain. Squared for fine control down low,
+   * and scaled so the knob's default position lands on the engine's own default
+   * gain of 2x. The old curve topped out at 100x, which turned the first pixel
+   * of knob movement into a 20dB jump through a distortion chain.
+   */
+  _inputGainFor(v) {
+    return v * v * 8;
+  }
+
+  /** Push the master section's knob positions into the engine. */
+  _applyMasterKnobsToAudio() {
+    const volume = document.getElementById('master-volume')?._value;
+    const input = document.getElementById('input-gain')?._value;
+    if (typeof volume === 'number') this.engine.setMasterVolume(volume);
+    if (typeof input === 'number') this.engine.setInputGain(this._inputGainFor(input));
+  }
+
   _bindKnob(id, callback) {
     const knob = document.getElementById(id);
     if (!knob) return;
     knob._callback = callback;
     knob._value = parseFloat(knob.dataset.value || 0.5);
+    // Remembered so a double-click can put the knob back where it started.
+    knob._default = knob._value;
+
+    // These are divs, so the slider semantics are added here rather than
+    // repeated across forty elements of markup.
+    const wrapper = knob.closest('.knob-wrapper') || knob.closest('.amp-knob-wrapper');
+    const label = wrapper?.querySelector('.knob-label');
+    knob.setAttribute('role', 'slider');
+    knob.setAttribute('tabindex', '0');
+    knob.setAttribute('aria-valuemin', '0');
+    knob.setAttribute('aria-valuemax', '10');
+    if (label) knob.setAttribute('aria-label', label.textContent.trim());
+
     this._updateKnobVisual(knob, knob._value);
   }
 
   _setupKnobInteractions() {
-    document.addEventListener('mousedown', (e) => {
-      const knob = e.target.closest('.knob');
+    // Pointer events rather than mouse events, so touch and pen work too — the
+    // layout has a phone breakpoint, but these knobs could not be turned there.
+    // Pointer capture keeps a drag alive when the cursor leaves the knob.
+    document.addEventListener('pointerdown', (e) => {
+      const knob = e.target.closest?.('.knob');
       if (!knob) return;
       e.preventDefault();
-      this._knobDragState = { knob, startY: e.clientY, startValue: knob._value || 0.5 };
+      knob.focus({ preventScroll: true });
+      this._knobDragState = {
+        knob,
+        pointerId: e.pointerId,
+        startY: e.clientY,
+        startValue: knob._value ?? 0.5,
+      };
+      try { knob.setPointerCapture(e.pointerId); } catch (err) { /* capture is optional */ }
     });
 
-    document.addEventListener('mousemove', (e) => {
-      if (!this._knobDragState) return;
-      const { knob, startY, startValue } = this._knobDragState;
-      const delta = (startY - e.clientY) / 150;
-      const newValue = Math.max(0, Math.min(1, startValue + delta));
-      knob._value = newValue;
-      knob.dataset.value = newValue;
-      this._updateKnobVisual(knob, newValue);
-      if (knob._callback) knob._callback(newValue);
+    document.addEventListener('pointermove', (e) => {
+      const drag = this._knobDragState;
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      const delta = (drag.startY - e.clientY) / 150;
+      this._setKnobValue(drag.knob, drag.startValue + delta);
     });
 
-    document.addEventListener('mouseup', () => {
+    const endDrag = (e) => {
+      const drag = this._knobDragState;
+      if (!drag || (e && e.pointerId !== undefined && e.pointerId !== drag.pointerId)) return;
+      try { drag.knob.releasePointerCapture(drag.pointerId); } catch (err) { /* already gone */ }
       this._knobDragState = null;
+    };
+    document.addEventListener('pointerup', endDrag);
+    document.addEventListener('pointercancel', endDrag);
+
+    // A slider answers to arrow keys.
+    document.addEventListener('keydown', (e) => {
+      const knob = e.target.closest?.('.knob');
+      if (!knob || !knob._callback) return;
+      const fine = 0.02, coarse = 0.1;
+      let next;
+      switch (e.key) {
+        case 'ArrowUp': case 'ArrowRight': next = knob._value + fine; break;
+        case 'ArrowDown': case 'ArrowLeft': next = knob._value - fine; break;
+        case 'PageUp': next = knob._value + coarse; break;
+        case 'PageDown': next = knob._value - coarse; break;
+        case 'Home': next = 0; break;
+        case 'End': next = 1; break;
+        default: return;
+      }
+      e.preventDefault();
+      this._setKnobValue(knob, next);
     });
+
+    // Double-click puts a knob back where it started.
+    document.addEventListener('dblclick', (e) => {
+      const knob = e.target.closest?.('.knob');
+      if (!knob || typeof knob._default !== 'number') return;
+      this._setKnobValue(knob, knob._default);
+    });
+  }
+
+  /** Clamp, store, redraw and report a new knob position. */
+  _setKnobValue(knob, value) {
+    const v = Math.max(0, Math.min(1, value));
+    knob._value = v;
+    knob.dataset.value = v;
+    this._updateKnobVisual(knob, v);
+    if (knob._callback) knob._callback(v);
   }
 
   _updateKnobVisual(knob, value) {
@@ -430,12 +523,14 @@ class App {
       indicator.style.transform = `rotate(${rotation}deg)`;
     }
     const wrapper = knob.closest('.knob-wrapper') || knob.closest('.amp-knob-wrapper');
+    const shown = Math.round(value * 10);
     if (wrapper) {
       const valueDisplay = wrapper.querySelector('.knob-value');
       if (valueDisplay) {
-        valueDisplay.textContent = Math.round(value * 10);
+        valueDisplay.textContent = shown;
       }
     }
+    knob.setAttribute('aria-valuenow', String(shown));
   }
 
   // ─── Presets ───
@@ -523,10 +618,14 @@ class App {
     saveBtn.addEventListener('click', () => {
       const name = prompt('Preset name:');
       if (!name) return;
-      const data = this._serializeUIState();
-      this.presetManager.saveUserPreset(name, data);
+      try {
+        this.presetManager.saveUserPreset(name.trim(), this._serializeUIState());
+      } catch (e) {
+        alert(e.message);
+        return;
+      }
       this._populatePresetList();
-      select.value = name;
+      select.value = name.trim();
     });
 
     deleteBtn.addEventListener('click', () => {
@@ -584,10 +683,12 @@ class App {
     // Apply bypass states to UI
     for (const [fxName, fxData] of Object.entries(preset.effects)) {
       const btn = document.getElementById(`${fxName}-bypass`);
-      if (btn) btn.classList.toggle('active', fxData.enabled);
+      if (btn) {
+        btn.classList.toggle('active', fxData.enabled);
+        btn.setAttribute('aria-pressed', String(!!fxData.enabled));
+      }
       const led = document.getElementById(`${fxName}-led`);
       if (led) led.classList.toggle('on', fxData.enabled);
-      this._pendingBypass[fxName] = fxData.enabled;
     }
 
     // Apply amp model
@@ -631,6 +732,10 @@ class App {
         this.amp.setParam(param, val);
       }
     }
+
+    // The master knobs were just synced from this preset; read them back rather
+    // than duplicating the value mapping.
+    this._applyMasterKnobsToAudio();
 
     this.engine.rebuildChain();
   }
@@ -694,6 +799,11 @@ class App {
       knobMap['eq-mid'] = preset.effects.eq.params.mid / 24 + 0.5;
       knobMap['eq-treble'] = preset.effects.eq.params.treble / 24 + 0.5;
     }
+    // Master — absent from user presets saved before this section existed.
+    if (preset.master) {
+      if (typeof preset.master.volume === 'number') knobMap['master-volume'] = preset.master.volume;
+      if (typeof preset.master.input === 'number') knobMap['input-gain'] = preset.master.input;
+    }
     // Amp
     if (preset.amp) {
       knobMap['amp-gain'] = preset.amp.params.gain;
@@ -716,14 +826,47 @@ class App {
   }
 
   _serializeUIState() {
-    return this._currentPreset || {};
+    // Copy, so later knob moves cannot reach into what was just saved.
+    const preset = this._currentPreset
+      ? JSON.parse(JSON.stringify(this._currentPreset))
+      : { effects: {} };
+    preset.master = {
+      volume: document.getElementById('master-volume')?._value ?? 0.8,
+      input: document.getElementById('input-gain')?._value ?? 0.5,
+    };
+    return preset;
   }
 
   // ─── Tuner ───
-  _setupTuner() {
+
+  /**
+   * The button is wired during UI setup, before any AudioContext exists.
+   * Attaching it from initAudio() instead meant the listener was added while
+   * the very first click was still being dispatched — so that click only
+   * started the audio and the user had to press Tuner twice.
+   */
+  _setupTunerButton() {
     const btn = document.getElementById('tuner-btn');
     const display = document.getElementById('tuner-display');
+    if (!btn) return;
 
+    btn.setAttribute('aria-pressed', 'false');
+    btn.addEventListener('click', async () => {
+      if (!this._audioInitialized) await this.initAudio();
+      if (!this.tuner) return;
+
+      const active = this.tuner.toggle();
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+      display?.classList.toggle('visible', active);
+
+      // Mute while tuning so the amp cannot feed back into the pickup. The
+      // engine owns this, so the master volume setting is left alone.
+      this.engine.setMuted(active);
+    });
+  }
+
+  _setupTuner() {
     if (!this.tuner) return;
 
     this.tuner.onUpdate = (note, octave, cents, freq) => {
@@ -741,41 +884,44 @@ class App {
         needle.classList.toggle('in-tune', Math.abs(cents) < 5);
       }
     };
-
-    btn.addEventListener('click', () => {
-      if (!this._audioInitialized) return;
-      const active = this.tuner.toggle();
-      btn.classList.toggle('active', active);
-      display.classList.toggle('visible', active);
-    });
   }
 
   // ─── IR Loading ───
   _setupIRLoadingUI() {
     const reverbIRBtn = document.getElementById('reverb-load-ir');
     if (reverbIRBtn) {
-      reverbIRBtn.addEventListener('click', () => {
-        if (this._audioInitialized) this._loadIRFile(this.effects.reverb);
+      reverbIRBtn.addEventListener('click', async () => {
+        if (!this._audioInitialized) await this.initAudio({ requestMicPermission: false });
+        this._loadIRFile(this.effects.reverb, 'reverb impulse response');
       });
     }
     const cabIRBtn = document.getElementById('cab-load-ir');
     if (cabIRBtn) {
-      cabIRBtn.addEventListener('click', () => {
-        if (this._audioInitialized) this._loadIRFile(this.amp);
+      cabIRBtn.addEventListener('click', async () => {
+        if (!this._audioInitialized) await this.initAudio({ requestMicPermission: false });
+        this._loadIRFile(this.amp, 'cabinet impulse response');
       });
     }
   }
 
-  _loadIRFile(target) {
+  _loadIRFile(target, label = 'impulse response') {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.wav,.mp3,.ogg';
+    input.accept = 'audio/*,.wav,.mp3,.ogg,.aiff,.aif,.flac';
     input.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const arrayBuffer = await file.arrayBuffer();
-      if (target.loadIR) await target.loadIR(arrayBuffer);
-      else if (target.loadCabIR) await target.loadCabIR(arrayBuffer);
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        if (target.loadIR) await target.loadIR(arrayBuffer);
+        else if (target.loadCabIR) await target.loadCabIR(arrayBuffer);
+        console.log(`[App] Loaded ${label} — ${file.name}`);
+      } catch (err) {
+        // Without this the rejection was swallowed and the IR silently stayed
+        // on the previous buffer.
+        console.error(`[App] Could not load ${label}:`, err);
+        alert(`Could not load "${file.name}" as an ${label}. Try an uncompressed WAV.`);
+      }
     });
     input.click();
   }
@@ -1049,15 +1195,22 @@ class App {
       } else if (state.localSource) {
         statusText.textContent = `Test signal — ${state.sampleRate}Hz`;
       } else {
-        statusText.textContent = `Live — ${state.sampleRate}Hz — Latency: ${(state.baseLatency * 1000).toFixed(1)}ms — ${state.transport}`;
+        const resampled = state.bridgeConnected && Math.abs(state.captureSampleRate - state.sampleRate) > 1
+          ? ` ← ${state.captureSampleRate}Hz capture`
+          : '';
+        statusText.textContent = `Live — ${state.sampleRate}Hz${resampled} — Latency: ${(state.baseLatency * 1000).toFixed(1)}ms — ${state.transport}`;
       }
     }
   }
 
   /**
-   * Monitor signal levels for debugging — logs every 2 seconds.
+   * Monitor signal levels — logs every 2 seconds, only with ?debug in the URL.
+   * It used to run unconditionally and could never be stopped, which filled the
+   * console during normal use.
    */
   _startSignalMonitor() {
+    if (!DEBUG || this._monitorTimer) return;
+
     // Reuse buffers across intervals to avoid repeated allocation.
     // Sized to match analyser fftSize (1024).
     this._monitorInputBuf = this._monitorInputBuf || new Float32Array(1024);
@@ -1065,7 +1218,7 @@ class App {
     const inputBuf = this._monitorInputBuf;
     const outputBuf = this._monitorOutputBuf;
 
-    setInterval(() => {
+    this._monitorTimer = setInterval(() => {
       if (!this.engine.isRunning) return;
 
       // Input level
@@ -1091,59 +1244,84 @@ class App {
 document.addEventListener('DOMContentLoaded', () => {
   const app = new App();
 
-  // Setup UI immediately — no audio context needed
+  // Setup UI immediately — no audio context needed. The Tuner button is wired
+  // in there too, so it works on its first click.
   app.setupUI();
 
-  // Tuner button (needs audio, handled separately)
-  const tunerBtn = document.getElementById('tuner-btn');
-  tunerBtn.addEventListener('click', async () => {
-    if (!app._audioInitialized) await app.initAudio();
-  });
+  // With ?debug, hang the controller off the window so the chain can be poked
+  // at from the console.
+  if (DEBUG) window.app = app;
 
   // Start/Stop button
   const startBtn = document.getElementById('start-btn');
+  const statusDot = document.getElementById('status-dot');
+  let busy = false;
+
   startBtn.addEventListener('click', async () => {
-    // Ensure audio is initialized
-    if (!app._audioInitialized) {
-      await app.initAudio();
-    }
+    // Starting takes a round trip to the bridge; a second click meanwhile would
+    // tear down the capture the first one is still setting up.
+    if (busy) return;
+    busy = true;
+    startBtn.disabled = true;
 
-    // Only act as STOP for a live input — if the test bench is what is playing,
-    // START takes over from it (startFromBridge/start stop it on the way in).
-    const state = app.engine.getState();
-    if (state.isRunning && !state.localSource) {
-      app.engine.stopInput();
-      if (app.visualizer) app.visualizer.stop();
-      startBtn.textContent = '▶ START';
-      startBtn.classList.remove('active');
-      document.getElementById('status-dot').classList.remove('live');
-    } else {
-      const deviceSelect = document.getElementById('device-select');
-      const channelSelect = document.getElementById('channel-select');
-      const deviceId = deviceSelect.value;
-      const channel = parseInt(channelSelect?.value || '0', 10);
-
-      try {
-        if (app._useBridge) {
-          // Use Core Audio bridge (primary)
-          await app.engine.startFromBridge(parseInt(deviceId, 10), channel);
-        } else {
-          // Fallback to browser getUserMedia
-          await app.engine.start(deviceId);
-          // Permission is granted now, so the device list can show real labels
-          app._populateDevices(true).catch(() => {});
-        }
-        if (app.visualizer) app.visualizer.start();
-        startBtn.textContent = '⏹ STOP';
-        startBtn.classList.add('active');
-        document.getElementById('status-dot').classList.add('live');
-      } catch (e) {
-        console.error('Failed to start audio:', e);
-        alert(app._useBridge
-          ? 'Failed to connect to AudioBridge. Make sure it is running (./audio-bridge/start-bridge.sh)'
-          : 'Failed to start audio: ' + e.message);
+    try {
+      // Ensure audio is initialized
+      if (!app._audioInitialized) {
+        await app.initAudio();
       }
+
+      // Only act as STOP for a live input — if the test bench is what is playing,
+      // START takes over from it (startFromBridge/start stop it on the way in).
+      const state = app.engine.getState();
+      if (state.isRunning && !state.localSource) {
+        app.engine.stopInput();
+        if (app.visualizer) app.visualizer.stop();
+        startBtn.textContent = '▶ START';
+        startBtn.classList.remove('active');
+        statusDot?.classList.remove('live');
+      } else {
+        const deviceSelect = document.getElementById('device-select');
+        const channelSelect = document.getElementById('channel-select');
+        const deviceId = deviceSelect.value;
+        const channel = parseInt(channelSelect?.value || '0', 10);
+
+        try {
+          if (app._useBridge) {
+            // Use Core Audio bridge (primary)
+            const numericId = parseInt(deviceId, 10);
+            if (!Number.isFinite(numericId)) {
+              throw new Error('Choose an audio input device first.');
+            }
+            await app.engine.startFromBridge(numericId, channel);
+          } else {
+            // Fallback to browser getUserMedia
+            await app.engine.start(deviceId);
+            // Permission is granted now, so the device list can show real labels
+            app._populateDevices(true).catch(() => {});
+          }
+          if (app.visualizer) app.visualizer.start();
+          startBtn.textContent = '⏹ STOP';
+          startBtn.classList.add('active');
+          statusDot?.classList.add('live');
+        } catch (e) {
+          console.error('Failed to start audio:', e);
+          // Leave nothing half-started behind.
+          app.engine.stopInput();
+          startBtn.textContent = '▶ START';
+          startBtn.classList.remove('active');
+          statusDot?.classList.remove('live');
+          // Report what actually went wrong — the bridge now says when a device
+          // is busy or missing, and that is more useful than a generic hint.
+          const detail = e?.message ? ` (${e.message})` : '';
+          alert(app._useBridge
+            ? `Could not start capture via the AudioBridge${detail}.\n\nMake sure it is running: ./audio-bridge/start-bridge.sh`
+            : `Failed to start audio${detail}.`);
+        }
+      }
+    } finally {
+      busy = false;
+      startBtn.disabled = false;
+      app._updateStateUI();
     }
-    app._updateStateUI();
   });
 });

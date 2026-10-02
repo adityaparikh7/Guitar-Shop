@@ -18,6 +18,7 @@ export const FACTORY_PRESETS = {
       reverb: { enabled: false, params: { decay: 1.5, mix: 0.15 } },
       eq: { enabled: false, params: { bass: 0, mid: 0, treble: 2 } },
     },
+    master: { volume: 0.8, input: 0.5 },
     amp: { enabled: true, params: { gain: 0.2, bass: 0.5, mid: 0.5, treble: 0.6, presence: 0.5, master: 0.7, model: 'clean' } },
   },
   'Blues': {
@@ -35,6 +36,7 @@ export const FACTORY_PRESETS = {
       reverb: { enabled: true, params: { decay: 1.8, mix: 0.2 } },
       eq: { enabled: true, params: { bass: 2, mid: 1, treble: -1 } },
     },
+    master: { volume: 0.8, input: 0.5 },
     amp: { enabled: true, params: { gain: 0.45, bass: 0.55, mid: 0.6, treble: 0.5, presence: 0.4, master: 0.65, model: 'crunch' } },
   },
   'Rock': {
@@ -52,6 +54,7 @@ export const FACTORY_PRESETS = {
       reverb: { enabled: true, params: { decay: 2.0, mix: 0.2 } },
       eq: { enabled: true, params: { bass: 3, mid: 2, treble: 1 } },
     },
+    master: { volume: 0.8, input: 0.5 },
     amp: { enabled: true, params: { gain: 0.6, bass: 0.6, mid: 0.55, treble: 0.6, presence: 0.5, master: 0.7, model: 'crunch' } },
   },
   'Metal': {
@@ -69,6 +72,7 @@ export const FACTORY_PRESETS = {
       reverb: { enabled: true, params: { decay: 1.2, mix: 0.1 } },
       eq: { enabled: true, params: { bass: 4, mid: -2, treble: 3 } },
     },
+    master: { volume: 0.8, input: 0.5 },
     amp: { enabled: true, params: { gain: 0.85, bass: 0.7, mid: 0.4, treble: 0.7, presence: 0.6, master: 0.7, model: 'highgain' } },
   },
   'Ambient': {
@@ -86,6 +90,7 @@ export const FACTORY_PRESETS = {
       reverb: { enabled: true, params: { decay: 4.0, mix: 0.5 } },
       eq: { enabled: true, params: { bass: -2, mid: 0, treble: 4 } },
     },
+    master: { volume: 0.8, input: 0.5 },
     amp: { enabled: true, params: { gain: 0.2, bass: 0.4, mid: 0.5, treble: 0.7, presence: 0.6, master: 0.6, model: 'clean' } },
   },
 };
@@ -114,6 +119,10 @@ export class PresetManager {
     return Object.keys(FACTORY_PRESETS);
   }
 
+  isFactoryPreset(name) {
+    return Object.prototype.hasOwnProperty.call(FACTORY_PRESETS, name);
+  }
+
   getFactoryPreset(name) {
     return FACTORY_PRESETS[name] ? JSON.parse(JSON.stringify(FACTORY_PRESETS[name])) : null;
   }
@@ -126,6 +135,12 @@ export class PresetManager {
   }
 
   saveUserPreset(name, data) {
+    // getPreset() resolves factory names first and deleteUserPreset refuses
+    // them, so a user preset sharing a factory name could never be loaded or
+    // removed again. Refuse it up front instead.
+    if (this.isFactoryPreset(name)) {
+      throw new Error(`"${name}" is a factory preset name — choose another.`);
+    }
     const presets = this.getUserPresets();
     presets[name] = data;
     localStorage.setItem(this._storageKey, JSON.stringify(presets));

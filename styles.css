@@ -2,7 +2,8 @@
    GUITAR SHOP — Hardware Stompbox & Amp Head Stylesheet
    ═══════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&family=Oswald:wght@500;600;700&display=swap');
+/* Fonts are loaded from index.html with crossorigin — an @import here is a
+   no-CORS request, which the app's own COEP: require-corp header blocks. */
 
 /* ─── CSS Variables ─── */
 :root {
@@ -100,6 +101,11 @@
 
 /* ─── Reset ─── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Controls that only apply in one input mode are shown and hidden with the
+   `hidden` attribute. Any author rule that sets `display` out-specifies the
+   browser's own [hidden] rule, so say it here rather than per element. */
+[hidden] { display: none !important; }
 
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
@@ -564,6 +570,9 @@ body::before {
     radial-gradient(circle at 50% 50%, var(--chrome-deep) 0%, var(--chrome-deep) 60%, transparent 61%);
   box-shadow: var(--shadow-knob);
   cursor: grab;
+  /* Knobs are dragged with pointer events, so the browser must not claim the
+     gesture for scrolling on a touch screen. */
+  touch-action: none;
   position: relative;
   user-select: none;
   transition: filter 0.2s ease;
@@ -575,6 +584,12 @@ body::before {
 
 .knob:active {
   cursor: grabbing;
+}
+
+/* Knobs are keyboard-operable sliders, so focus has to be visible. */
+.knob:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 3px;
 }
 
 .knob-indicator {
@@ -1189,6 +1204,20 @@ body::before {
   .header-controls {
     flex-wrap: wrap;
     justify-content: center;
+    width: 100%;
+  }
+
+  /* The 200px floor under the device selects is what pushed the header wider
+     than a phone screen, clipping the labels off both edges. Give each one its
+     own row and let it shrink to fit. */
+  .device-selector {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .device-selector select {
+    min-width: 0;
+    flex: 1;
   }
 
   .pedals-grid {

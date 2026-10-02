@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Guitar Shop — Browser-based guitar effects pedal and amp emulator. Real-time audio processing with Web Audio API.">
   <title>Guitar Shop — Effects Pedal & Amp Emulator</title>
+  <!-- Fonts are linked here rather than @import-ed from the stylesheet: the app
+       is served with Cross-Origin-Embedder-Policy: require-corp so that
+       SharedArrayBuffer is available, and under that policy a no-CORS subresource
+       request is blocked outright. A <link> with crossorigin makes it a CORS
+       request, which Google Fonts allows. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&family=Oswald:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -26,7 +34,7 @@
           <option value="">— Select audio input —</option>
         </select>
       </div>
-      <div class="device-selector">
+      <div class="device-selector" id="channel-group" hidden>
         <label for="channel-select">Channel</label>
         <select id="channel-select">
           <option value="0">Channel 1</option>

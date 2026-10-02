@@ -198,13 +198,6 @@ export class TestSignal {
     return this._loop ? (elapsed % dur) / dur : Math.min(1, elapsed / dur);
   }
 
-  /**
-   * Discard cached buffers — used when the sample rate changes.
-   */
-  clearCache() {
-    this._buffers.clear();
-  }
-
   // ─── Generation ─────────────────────────────────────────────────────
 
   _getGenerated(kind) {

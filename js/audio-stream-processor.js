@@ -8,8 +8,14 @@
  *   2. **postMessage** (fallback) — Copies Float32Array per message.
  *      Used when SharedArrayBuffer is unavailable (missing COOP/COEP headers).
  *
- * Ring buffer is sized to ~42ms @ 48kHz (2048 samples) for low latency.
- * Audio output starts only after a pre-fill threshold is reached (~10ms).
+ * The ring is sized generously (~340ms) so a large capture buffer can never
+ * overrun it; latency is governed by MAX_BUFFERED_SAMPLES instead, which the
+ * reader trims down to. That split matters: an undersized ring silently loses
+ * audio, whereas trimming on the reader side is race-free because the reader
+ * owns the read cursor.
+ *
+ * If the capture device runs at a different rate than the AudioContext, the
+ * stream is resampled here with linear interpolation.
  */
 
 // ─── Shared Constants (must match audio-engine.js) ──────────────────────────
@@ -21,12 +27,21 @@ const CTRL_WRITE_POS = 0;
 const CTRL_READ_POS = 1;
 const CTRL_CAPACITY = 2;
 
-// Fallback ring buffer size (also used as default SAB size)
-const RING_BUFFER_SIZE = 2048;
+// Ring capacity — headroom, not latency. ~340ms @ 48kHz.
+const RING_BUFFER_SIZE = 16384;
 
-// Don't start outputting until we have this many samples buffered.
-// ~10ms @ 48kHz — enough to absorb jitter without adding perceptible latency.
+// Starting defaults, used until the main thread reports how big the capture
+// callbacks actually are. Both are then sized from that, because the real
+// constraint is the capture cadence: audio that arrives in bursts of N samples
+// cannot be played back continuously from a buffer smaller than N, no matter
+// how low you would like the latency to be.
 const PRE_FILL_THRESHOLD = 512;
+
+// Upper bound on buffered audio. Anything beyond this is pure latency, so the
+// reader skips ahead rather than letting it accumulate — which is what keeps a
+// slightly fast capture clock from drifting into a long delay. Too small and it
+// fights the capture burst size, trimming audio away and then starving.
+const MAX_BUFFERED_SAMPLES = 2048;
 
 class AudioStreamProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -35,7 +50,16 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
     this._useSAB = false;
     this._preFilled = false;
     this._underrunCount = 0;
+    this._trimCount = 0;
     this._totalFrames = 0;
+
+    // Resampling state — ratio of input samples consumed per output sample.
+    this._ratio = 1;
+    this._fracPos = 0;
+
+    // Sized from the observed capture chunk once the main thread measures it.
+    this._preFill = PRE_FILL_THRESHOLD;
+    this._maxBuffered = MAX_BUFFERED_SAMPLES;
 
     // ── Always initialize postMessage fallback ring buffer ──
     this._ringBuffer = new Float32Array(RING_BUFFER_SIZE);
@@ -44,8 +68,10 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
     this._bufferedSamples = 0;
     this._capacity = RING_BUFFER_SIZE;
 
-    // ── Try to upgrade to SharedArrayBuffer mode ──
     const processorOptions = options?.processorOptions;
+    this._debug = !!processorOptions?.debug;
+
+    // ── Try to upgrade to SharedArrayBuffer mode ──
     if (typeof SharedArrayBuffer !== 'undefined' &&
         processorOptions?.ringBufferSAB instanceof SharedArrayBuffer &&
         processorOptions?.controlSAB instanceof SharedArrayBuffer) {
@@ -59,24 +85,44 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Receive audio data from main thread (fallback mode / reset commands)
+    if (processorOptions?.inputSampleRate) {
+      this._setInputSampleRate(processorOptions.inputSampleRate);
+    }
+
+    // Receive audio data from main thread (fallback mode / control commands)
     this._postMsgCount = 0;
     this.port.onmessage = (event) => {
-      if (event.data instanceof Float32Array) {
+      const data = event.data;
+      if (data instanceof Float32Array) {
         if (!this._useSAB) {
           this._postMsgCount++;
-          this._writeToRing(event.data);
+          this._writeToRing(data);
         }
         // In SAB mode, main thread writes directly — ignore postMessage audio
-      } else if (event.data === 'reset') {
+      } else if (data === 'reset') {
         this._reset();
+      } else if (data && data.type === 'config') {
+        if (data.inputSampleRate) this._setInputSampleRate(data.inputSampleRate);
+        if (typeof data.debug === 'boolean') this._debug = data.debug;
+        if (data.preFill > 0) this._preFill = Math.min(data.preFill, this._capacity >> 2);
+        if (data.maxBuffered > 0) this._maxBuffered = Math.min(data.maxBuffered, this._capacity >> 1);
       }
     };
+  }
+
+  _setInputSampleRate(rate) {
+    // sampleRate is the AudioContext rate, a global in the AudioWorklet scope.
+    const ratio = rate / sampleRate;
+    // Ignore absurd values rather than destroying playback.
+    this._ratio = (ratio > 0.25 && ratio < 4) ? ratio : 1;
+    this._fracPos = 0;
   }
 
   _reset() {
     this._preFilled = false;
     this._underrunCount = 0;
+    this._trimCount = 0;
+    this._fracPos = 0;
     if (this._useSAB) {
       Atomics.store(this._control, CTRL_READ_POS, Atomics.load(this._control, CTRL_WRITE_POS));
     } else {
@@ -134,6 +180,22 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
     }
   }
 
+  _readPosition() {
+    return this._useSAB ? Atomics.load(this._control, CTRL_READ_POS) : this._readPos;
+  }
+
+  /** Move the read cursor forward by `count` samples. The reader owns it. */
+  _advanceRead(count) {
+    const rp = this._readPosition();
+    const newRp = (rp + count) % this._capacity;
+    if (this._useSAB) {
+      Atomics.store(this._control, CTRL_READ_POS, newRp);
+    } else {
+      this._readPos = newRp;
+      this._bufferedSamples -= count;
+    }
+  }
+
   process(inputs, outputs, parameters) {
     const output = outputs[0];
     if (!output || output.length === 0) return true;
@@ -142,15 +204,21 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
     const needed = channel.length; // 128 samples
     const buf = this._ringBuffer;
     const size = this._capacity;
+    const ratio = this._ratio;
+    const resampling = ratio !== 1;
+
+    // Interpolation reads one sample past the last consumed one.
+    const required = resampling ? Math.ceil(needed * ratio) + 2 : needed;
 
     this._totalFrames++;
 
-    const available = this._available();
+    let available = this._available();
 
     // Wait for pre-fill before starting output (reduces initial latency jitter)
     if (!this._preFilled) {
-      if (available >= PRE_FILL_THRESHOLD) {
+      if (available >= Math.max(this._preFill, required)) {
         this._preFilled = true;
+        this._fracPos = 0;
       } else {
         channel.fill(0);
         for (let ch = 1; ch < output.length; ch++) output[ch].fill(0);
@@ -158,35 +226,48 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
       }
     }
 
-    if (available >= needed) {
-      let rp;
-      if (this._useSAB) {
-        rp = Atomics.load(this._control, CTRL_READ_POS);
-      } else {
-        rp = this._readPos;
-      }
+    // Keep latency bounded: drop the oldest audio rather than let the backlog grow.
+    if (available > this._maxBuffered) {
+      const skip = available - this._maxBuffered;
+      this._advanceRead(skip);
+      this._fracPos = 0;
+      available -= skip;
+      this._trimCount++;
+    }
 
-      const spaceToEnd = size - rp;
+    if (available >= required) {
+      const rp = this._readPosition();
 
-      if (needed <= spaceToEnd) {
-        channel.set(buf.subarray(rp, rp + needed));
+      if (!resampling) {
+        const spaceToEnd = size - rp;
+        if (needed <= spaceToEnd) {
+          channel.set(buf.subarray(rp, rp + needed));
+        } else {
+          channel.set(buf.subarray(rp, rp + spaceToEnd));
+          channel.set(buf.subarray(0, needed - spaceToEnd), spaceToEnd);
+        }
+        this._advanceRead(needed);
       } else {
-        channel.set(buf.subarray(rp, rp + spaceToEnd));
-        channel.set(buf.subarray(0, needed - spaceToEnd), spaceToEnd);
-      }
-
-      const newRp = (rp + needed) % size;
-      if (this._useSAB) {
-        Atomics.store(this._control, CTRL_READ_POS, newRp);
-      } else {
-        this._readPos = newRp;
-        this._bufferedSamples -= needed;
+        // Linear interpolation resample from the capture rate to the context rate.
+        let pos = this._fracPos;
+        for (let i = 0; i < needed; i++) {
+          const whole = Math.floor(pos);
+          const t = pos - whole;
+          const a = buf[(rp + whole) % size];
+          const b = buf[(rp + whole + 1) % size];
+          channel[i] = a + (b - a) * t;
+          pos += ratio;
+        }
+        const consumed = Math.floor(pos);
+        this._fracPos = pos - consumed;
+        this._advanceRead(consumed);
       }
     } else {
       // Buffer underrun — output silence, request re-fill
       channel.fill(0);
       this._underrunCount++;
       this._preFilled = false; // wait for pre-fill again
+      this._fracPos = 0;
     }
 
     // Copy mono to all output channels
@@ -194,17 +275,21 @@ class AudioStreamProcessor extends AudioWorkletProcessor {
       output[ch].set(channel);
     }
 
-    // Report buffer health every ~2 seconds
-    if (this._totalFrames % 750 === 0) {
+    // Report buffer health every ~2 seconds (debug builds only)
+    if (this._debug && this._totalFrames % 750 === 0) {
       this.port.postMessage({
         type: 'health',
         buffered: available,
         capacity: size,
         underruns: this._underrunCount,
+        trims: this._trimCount,
         fillPercent: Math.round((available / size) * 100),
         mode: this._useSAB ? 'sab' : 'postMessage',
         preFilled: this._preFilled,
         postMsgCount: this._postMsgCount,
+        ratio: ratio,
+        preFill: this._preFill,
+        maxBuffered: this._maxBuffered,
       });
     }
 

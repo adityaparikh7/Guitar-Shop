@@ -34,11 +34,6 @@ export class AmpSim {
 
     // Cabinet simulation
     this._cabinet = context.createConvolver();
-    this._cabBypass = context.createGain();
-    this._cabWet = context.createGain();
-    this._cabWet.gain.value = 1;
-    this._cabBypass.gain.value = 0;
-    this._cabEnabled = true;
     this._generateCabIR();
 
     // Master
@@ -52,20 +47,19 @@ export class AmpSim {
     this._bass.connect(this._mid);
     this._mid.connect(this._treble);
     this._treble.connect(this._presence);
-    // Cabinet path
     this._presence.connect(this._cabinet);
-    this._cabinet.connect(this._cabWet);
-    this._cabWet.connect(this._master);
-    // Bypass path
-    this._presence.connect(this._cabBypass);
-    this._cabBypass.connect(this._master);
+    this._cabinet.connect(this._master);
     this._master.connect(this._output);
 
-    // Store param values (must be before setModel which writes to _params)
-    this._params = { gain: 0.3, bass: 0, mid: 0, treble: 0, presence: 0, master: 0.7, model: 'clean' };
+    // Store param values (must be before setModel which writes to _params).
+    // These are knob positions in 0–1, so the tone controls sit at noon —
+    // writing 0 here would have meant −6dB on every band until first touch.
+    this._params = { gain: 0.3, bass: 0.5, mid: 0.5, treble: 0.5, presence: 0.5, master: 0.7, model: 'clean' };
 
-    // Set default model
-    this.setModel('clean');
+    // Push the defaults into the nodes so the graph matches _params from the start.
+    for (const [name, value] of Object.entries(this._params)) {
+      this.setParam(name, value);
+    }
   }
 
   getInputNode() { return this._input; }
@@ -101,7 +95,8 @@ export class AmpSim {
     this._params.model = model;
     const curves = { clean: 1, crunch: 20, highgain: 80 };
     const amount = curves[model] || 1;
-    const n = 44100;
+    // 4096 points is inaudibly different from a table 10x the size.
+    const n = 4096;
     const curve = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const x = (i * 2) / n - 1;
@@ -131,10 +126,4 @@ export class AmpSim {
   getParams() { return { ...this._params }; }
 
   toggle() { this.enabled = !this.enabled; return this.enabled; }
-
-  serialize() { return { name: 'amp', enabled: this.enabled, params: this.getParams() }; }
-  deserialize(data) {
-    this.enabled = data.enabled;
-    for (const [k, v] of Object.entries(data.params)) this.setParam(k, v);
-  }
 }

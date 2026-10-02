@@ -20,6 +20,59 @@ import AVFoundation
 import CoreAudio
 import Network
 
+// MARK: - Access Control
+//
+// The bridge hands out raw instrument/microphone audio with no operating-system
+// permission prompt in front of it, so it must not be reachable by anything but
+// this app running locally. Two independent checks:
+//   1. the peer must be on the loopback interface, and
+//   2. a browser's Origin (when it sends one) must be a localhost origin.
+// A page on the open web always sends an Origin, so check 2 is what stops a
+// drive-by site from opening ws://localhost:9876 and recording the user.
+
+let allowedOriginHosts: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"]
+
+func isAllowedOrigin(_ origin: String?) -> Bool {
+    // No Origin at all: not a browser page (curl, a native tool). Allowed —
+    // loopback is still enforced separately.
+    guard let origin = origin, !origin.isEmpty else { return true }
+    // "null" is what a file:// or sandboxed page sends. Never trusted.
+    guard origin != "null" else { return false }
+    guard let url = URL(string: origin),
+          let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          let host = url.host?.lowercased() else { return false }
+    return allowedOriginHosts.contains(host)
+}
+
+func isLoopback(_ endpoint: NWEndpoint?) -> Bool {
+    guard let endpoint = endpoint else { return false }
+    switch endpoint {
+    case .hostPort(let host, _):
+        switch host {
+        case .ipv4(let addr): return addr.isLoopback
+        case .ipv6(let addr): return addr.isLoopback
+        case .name(let name, _): return allowedOriginHosts.contains(name.lowercased())
+        @unknown default: return false
+        }
+    default:
+        return false
+    }
+}
+
+/// Pull one header value out of a raw HTTP request, case-insensitively.
+func httpHeader(_ name: String, from request: String) -> String? {
+    let wanted = name.lowercased() + ":"
+    for line in request.split(separator: "\r\n").dropFirst() {
+        if line.isEmpty { break }
+        let lower = line.lowercased()
+        if lower.hasPrefix(wanted) {
+            return line.dropFirst(wanted.count).trimmingCharacters(in: .whitespaces)
+        }
+    }
+    return nil
+}
+
 // MARK: - Core Audio Device Enumeration
 
 struct AudioDeviceInfo: Codable {
@@ -99,10 +152,10 @@ func getAudioInputDevices() -> [AudioDeviceInfo] {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var nameRef: CFString = "" as CFString
-        var nameSize = UInt32(MemoryLayout<CFString>.size)
+        var nameRef: Unmanaged<CFString>?
+        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &nameRef)
-        let name = nameRef as String
+        let name = (nameRef?.takeRetainedValue() as String?) ?? "Unknown Device"
 
         // Get device UID
         var uidAddress = AudioObjectPropertyAddress(
@@ -110,10 +163,10 @@ func getAudioInputDevices() -> [AudioDeviceInfo] {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var uidRef: CFString = "" as CFString
-        var uidSize = UInt32(MemoryLayout<CFString>.size)
+        var uidRef: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, &uidRef)
-        let uid = uidRef as String
+        let uid = (uidRef?.takeRetainedValue() as String?) ?? ""
 
         // Get nominal sample rate
         var srAddress = AudioObjectPropertyAddress(
@@ -151,6 +204,7 @@ class AudioCapture {
     var onAudioBuffer: (([Float]) -> Void)?
 
     private var isCapturing = false
+    private var loggedTapSize = false
 
     func listDevices() -> [AudioDeviceInfo] {
         return getAudioInputDevices()
@@ -167,7 +221,10 @@ class AudioCapture {
         var deviceIDValue = deviceID
 
         // Set the device ID on the audio unit
-        let auUnit = inputNode.audioUnit!
+        guard let auUnit = inputNode.audioUnit else {
+            throw NSError(domain: "AudioBridge", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Input node has no audio unit"])
+        }
         let status = AudioUnitSetProperty(
             auUnit,
             kAudioOutputUnitProperty_CurrentDevice,
@@ -212,10 +269,22 @@ class AudioCapture {
 
         // Install a tap to capture audio — use 64-sample buffer for minimal latency.
         // Passing nil for format lets the engine use the node's native format safely.
+        loggedTapSize = false
         inputNode.installTap(onBus: 0, bufferSize: 64, format: nil) { [weak self] buffer, _ in
             guard let self = self,
                   let channelData = buffer.floatChannelData?[0] else { return }
             let frameCount = Int(buffer.frameLength)
+            // A zero-frame callback would produce an empty array, whose
+            // baseAddress is nil — don't hand that to the broadcaster.
+            guard frameCount > 0 else { return }
+            if !self.loggedTapSize {
+                self.loggedTapSize = true
+                let ms = Double(frameCount) / buffer.format.sampleRate * 1000
+                // installTap's bufferSize is advisory and routinely ignored —
+                // this is what the capture cadence, and so the latency floor,
+                // actually is. The browser sizes its buffering from it.
+                print(String(format: "[AudioBridge] Tap delivering %d frames per callback (%.1fms)", frameCount, ms))
+            }
             let samples = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
             self.onAudioBuffer?(samples)
         }
@@ -233,11 +302,11 @@ class AudioCapture {
     func stop() {
         // Always attempt to remove the tap to avoid 'nullptr == Tap()' crashes
         engine.inputNode.removeTap(onBus: 0)
-        
+
         if engine.isRunning {
             engine.stop()
         }
-        
+
         if isCapturing {
             isCapturing = false
             print("[AudioBridge] Stopped capture")
@@ -262,7 +331,15 @@ class AudioCapture {
 class BridgeServer {
     let capture = AudioCapture()
     var listener: NWListener?
-    var connections: [ObjectIdentifier: NWConnection] = [:]
+    // Held in a property for the same reason as `listener`: a local would be
+    // released when startHTTPServer() returns, taking /devices with it.
+    var httpListener: NWListener?
+
+    // Written on `queue`, read from the realtime audio thread in
+    // broadcastAudio() — every access goes through the lock.
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private let connectionsLock = NSLock()
+
     let queue = DispatchQueue(label: "bridge-server", qos: .userInteractive)
     let port: UInt16
 
@@ -278,8 +355,22 @@ class BridgeServer {
 
         // Create TCP listener with WebSocket support
         let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
+
+        // Inspect the upgrade request before accepting it. This is the only
+        // place the Origin is visible, and it is what keeps an arbitrary web
+        // page from streaming the user's guitar.
+        wsOptions.setClientRequestHandler(queue) { _, headers in
+            let origin = headers.first { $0.name.lowercased() == "origin" }?.value
+            if isAllowedOrigin(origin) {
+                return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+            }
+            print("[AudioBridge] Rejected WebSocket upgrade from origin: \(origin ?? "<none>")")
+            return NWProtocolWebSocket.Response(status: .reject, subprotocol: nil)
+        }
+
         parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
 
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
@@ -308,18 +399,44 @@ class BridgeServer {
         print("[AudioBridge] Waiting for connections...")
     }
 
+    private func addConnection(_ connection: NWConnection) {
+        connectionsLock.lock()
+        connections[ObjectIdentifier(connection)] = connection
+        connectionsLock.unlock()
+    }
+
+    private func removeConnection(_ connection: NWConnection) {
+        connectionsLock.lock()
+        connections.removeValue(forKey: ObjectIdentifier(connection))
+        connectionsLock.unlock()
+    }
+
+    private func currentConnections() -> [NWConnection] {
+        connectionsLock.lock()
+        let snapshot = Array(connections.values)
+        connectionsLock.unlock()
+        return snapshot
+    }
+
     private func handleConnection(_ connection: NWConnection) {
         connection.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             switch state {
             case .ready:
+                let peer = connection.currentPath?.remoteEndpoint ?? connection.endpoint
+                guard isLoopback(peer) else {
+                    print("[AudioBridge] Refused non-local client: \(peer)")
+                    connection.cancel()
+                    return
+                }
                 print("[AudioBridge] Client connected")
-                self?.connections[ObjectIdentifier(connection)] = connection
-                self?.receiveMessages(connection)
+                self.addConnection(connection)
+                self.receiveMessages(connection)
             case .failed(let error):
                 print("[AudioBridge] Client disconnected: \(error)")
-                self?.connections.removeValue(forKey: ObjectIdentifier(connection))
+                self.removeConnection(connection)
             case .cancelled:
-                self?.connections.removeValue(forKey: ObjectIdentifier(connection))
+                self.removeConnection(connection)
             default:
                 break
             }
@@ -333,6 +450,7 @@ class BridgeServer {
 
             if let error = error {
                 print("[AudioBridge] Receive error: \(error)")
+                connection.cancel()
                 return
             }
 
@@ -417,20 +535,18 @@ class BridgeServer {
     }
 
     private func broadcastAudio(_ samples: [Float]) {
-        guard !connections.isEmpty else { return }
+        // Called on the realtime audio thread.
+        guard !samples.isEmpty else { return }
+        let targets = currentConnections()
+        guard !targets.isEmpty else { return }
 
         // Convert Float array to raw bytes
-        let data = samples.withUnsafeBufferPointer { buffer in
-            Data(buffer: UnsafeBufferPointer(
-                start: UnsafeRawPointer(buffer.baseAddress!).assumingMemoryBound(to: UInt8.self),
-                count: buffer.count * MemoryLayout<Float>.size
-            ))
-        }
+        let data = samples.withUnsafeBytes { Data($0) }
 
         let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
         let context = NWConnection.ContentContext(identifier: "audio", metadata: [metadata])
 
-        for (_, connection) in connections {
+        for connection in targets {
             connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed({ _ in }))
         }
     }
@@ -438,35 +554,59 @@ class BridgeServer {
     // Simple HTTP server for device enumeration (no WebSocket upgrade)
     private func startHTTPServer(port: UInt16) {
         let parameters = NWParameters.tcp
-        guard let httpListener = try? NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!) else {
+        parameters.allowLocalEndpointReuse = true
+        guard let listener = try? NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!) else {
             print("[AudioBridge] Failed to start HTTP server")
             return
         }
 
-        httpListener.newConnectionHandler = { [weak self] connection in
+        listener.newConnectionHandler = { [weak self] connection in
             connection.stateUpdateHandler = { state in
                 if state == .ready {
+                    let peer = connection.currentPath?.remoteEndpoint ?? connection.endpoint
+                    guard isLoopback(peer) else {
+                        print("[AudioBridge] Refused non-local HTTP client: \(peer)")
+                        connection.cancel()
+                        return
+                    }
                     self?.handleHTTPRequest(connection)
                 }
             }
             connection.start(queue: self?.queue ?? .main)
         }
 
-        httpListener.start(queue: queue)
+        listener.start(queue: queue)
+        httpListener = listener
     }
 
     private func handleHTTPRequest(_ connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, _, _ in
             guard let self = self, let data = data, let request = String(data: data, encoding: .utf8) else { return }
 
+            // A browser page from anywhere but localhost gets nothing — not the
+            // device list, not the app itself.
+            let origin = httpHeader("Origin", from: request)
+            guard isAllowedOrigin(origin) else {
+                print("[AudioBridge] Refused HTTP request from origin: \(origin ?? "<none>")")
+                self.sendHTTP(connection, status: 403, contentType: "text/plain",
+                              body: Data("403 Forbidden\n".utf8), corsOrigin: nil)
+                return
+            }
+            // Echo the origin back only when it is one we allow, so the app can
+            // call the API cross-origin from the dev server without opening it
+            // up to every site on the web.
+            let corsOrigin = origin
+
             // Parse the request path
             let lines = request.split(separator: "\r\n")
             guard let requestLine = lines.first else { return }
             let parts = requestLine.split(separator: " ")
-            var path = parts.count > 1 ? String(parts[1]) : "/"
+            let target = parts.count > 1 ? String(parts[1]) : "/"
 
-            // Default to index.html
-            if path == "/" { path = "/index.html" }
+            // Strip the query string before any filesystem work, so a request
+            // for /index.html?debug resolves to the file it names.
+            var path = String(target.split(separator: "?").first ?? "/")
+            if path.isEmpty || path == "/" { path = "/index.html" }
 
             var responseBody: Data
             var contentType = "text/plain"
@@ -486,21 +626,39 @@ class BridgeServer {
                 let status: [String: Any] = [
                     "running": self.capture.engine.isRunning,
                     "sampleRate": self.capture.getSampleRate(),
-                    "connections": self.connections.count
+                    "connections": self.currentConnections().count
                 ]
                 responseBody = (try? JSONSerialization.data(withJSONObject: status)) ?? Data("{}".utf8)
 
             // ── Static file serving (web root = parent of audio-bridge/) ──
             default:
                 // Resolve path relative to the web root (parent of this binary's directory)
-                let bridgeDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
-                let webRoot = bridgeDir.deletingLastPathComponent()
-                
-                // Security: prevent directory traversal
-                let cleanPath = path.replacingOccurrences(of: "..", with: "")
-                let filePath = webRoot.appendingPathComponent(String(cleanPath.dropFirst())).path
+                let bridgeDir = URL(fileURLWithPath: CommandLine.arguments[0])
+                    .resolvingSymlinksInPath()
+                    .deletingLastPathComponent()
+                let webRoot = bridgeDir.deletingLastPathComponent().standardizedFileURL
 
-                if FileManager.default.fileExists(atPath: filePath) {
+                // Decode first, then resolve, then prove the result is still
+                // inside the web root. Stripping ".." from the raw string is a
+                // blacklist: it misses encoded traversal and mangles legitimate
+                // names that happen to contain dots.
+                let decoded = path.removingPercentEncoding ?? path
+                let resolved = webRoot
+                    .appendingPathComponent(String(decoded.dropFirst()))
+                    .standardizedFileURL
+                let rootPrefix = webRoot.path.hasSuffix("/") ? webRoot.path : webRoot.path + "/"
+                let filePath = resolved.path
+
+                guard filePath == webRoot.path || filePath.hasPrefix(rootPrefix) else {
+                    print("[AudioBridge] Refused path outside web root: \(path)")
+                    self.sendHTTP(connection, status: 403, contentType: "text/plain",
+                                  body: Data("403 Forbidden\n".utf8), corsOrigin: corsOrigin)
+                    return
+                }
+
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: filePath, isDirectory: &isDirectory),
+                   !isDirectory.boolValue {
                     responseBody = (try? Data(contentsOf: URL(fileURLWithPath: filePath))) ?? Data()
 
                     // Determine content type from extension
@@ -526,29 +684,46 @@ class BridgeServer {
                 }
             }
 
-            let header = """
-            HTTP/1.1 \(statusCode) \(statusCode == 200 ? "OK" : "Not Found")\r
-            Content-Type: \(contentType)\r
-            Content-Length: \(responseBody.count)\r
-            Access-Control-Allow-Origin: *\r
-            Access-Control-Allow-Headers: *\r
-            Cross-Origin-Opener-Policy: same-origin\r
-            Cross-Origin-Embedder-Policy: require-corp\r
-            Connection: close\r
-            \r\n
-            """
-
-            var fullResponse = Data(header.utf8)
-            fullResponse.append(responseBody)
-
-            connection.send(content: fullResponse, completion: .contentProcessed({ _ in
-                connection.cancel()
-            }))
+            self.sendHTTP(connection, status: statusCode, contentType: contentType,
+                          body: responseBody, corsOrigin: corsOrigin)
         }
+    }
+
+    /// Write one response and close. COOP/COEP are always sent so a page served
+    /// from here is cross-origin isolated and can use SharedArrayBuffer.
+    private func sendHTTP(_ connection: NWConnection, status: Int, contentType: String,
+                          body: Data, corsOrigin: String?) {
+        let reason: String
+        switch status {
+        case 200: reason = "OK"
+        case 403: reason = "Forbidden"
+        case 404: reason = "Not Found"
+        default:  reason = "Error"
+        }
+
+        var header = "HTTP/1.1 \(status) \(reason)\r\n"
+        header += "Content-Type: \(contentType)\r\n"
+        header += "Content-Length: \(body.count)\r\n"
+        if let corsOrigin = corsOrigin {
+            header += "Access-Control-Allow-Origin: \(corsOrigin)\r\n"
+            header += "Vary: Origin\r\n"
+        }
+        header += "Cross-Origin-Opener-Policy: same-origin\r\n"
+        header += "Cross-Origin-Embedder-Policy: require-corp\r\n"
+        header += "Connection: close\r\n\r\n"
+
+        var fullResponse = Data(header.utf8)
+        fullResponse.append(body)
+
+        connection.send(content: fullResponse, completion: .contentProcessed({ _ in
+            connection.cancel()
+        }))
     }
 }
 
 // MARK: - Main Entry Point
+
+setbuf(stdout, nil)
 
 let args = CommandLine.arguments
 var targetDeviceID: UInt32? = nil

@@ -14,13 +14,22 @@
 const CTRL_WRITE_POS = 0;
 const CTRL_READ_POS = 1;
 const CTRL_CAPACITY = 2;
-const RING_BUFFER_SIZE = 2048;
+
+// Ring capacity is headroom, not latency — a capture callback can hand us
+// thousands of samples at once, and anything that does not fit is audio lost.
+// The worklet caps latency by trimming its own read cursor instead.
+const RING_BUFFER_SIZE = 16384;
+
+// Verbose per-frame logging is opt-in: append ?debug to the URL.
+const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
 export class AudioEngine {
   constructor() {
     this.context = null;
     this.inputGainNode = null;
     this.masterGainNode = null;
+    this.limiterNode = null;
+    this.muteNode = null;
     this.analyserInput = null;
     this.analyserOutput = null;
     this.effectsChain = [];
@@ -41,6 +50,15 @@ export class AudioEngine {
     this._controlSAB = null;
     this._ringBufferView = null;
     this._controlView = null;
+    this._sabOverflowCount = 0;
+
+    // Largest capture chunk seen so far. AVAudioEngine ignores the tap buffer
+    // size it is asked for and can deliver 100ms at a time, so the buffering
+    // targets are derived from what actually arrives rather than guessed.
+    this._maxChunkSamples = 0;
+
+    // Settles the promise returned by startFromBridge(), exactly once.
+    this._pendingStart = null;
 
     // Browser fallback state
     this.inputStream = null;
@@ -93,8 +111,26 @@ export class AudioEngine {
     this.analyserOutput.fftSize = 1024;
     this.analyserOutput.smoothingTimeConstant = 0.5;
 
-    // Connect master gain → output analyser → destination
-    this.masterGainNode.connect(this.analyserOutput);
+    // Safety limiter — the chain can reach enormous gain (input trim × boost ×
+    // two drives × amp pre-gain) and the delay/flanger feedback paths can
+    // self-oscillate, so nothing may leave here above full scale. A shaped
+    // curve is used rather than a compressor because it adds no lookahead
+    // latency, which matters when you are playing through this live.
+    this.limiterNode = this.context.createWaveShaper();
+    this.limiterNode.curve = this._makeLimiterCurve();
+    // No oversampling: it would add filter latency to the always-on master
+    // path, and the curve is unity below the knee so there is little to alias.
+    this.limiterNode.oversample = 'none';
+
+    // Dedicated mute, so muting (e.g. while tuning) never disturbs the
+    // master volume the user set.
+    this.muteNode = this.context.createGain();
+    this.muteNode.gain.value = 1;
+
+    // Connect master gain → limiter → mute → output analyser → destination
+    this.masterGainNode.connect(this.limiterNode);
+    this.limiterNode.connect(this.muteNode);
+    this.muteNode.connect(this.analyserOutput);
     this.analyserOutput.connect(this.context.destination);
 
     // Check SharedArrayBuffer availability — requires crossOriginIsolated (COOP/COEP headers)
@@ -130,6 +166,32 @@ export class AudioEngine {
     }
 
     console.log(`[AudioEngine] Initialized — sampleRate: ${this.context.sampleRate}, baseLatency: ${this.context.baseLatency?.toFixed(4)}s, transport: ${this._useSAB ? 'SAB' : 'postMessage'}`);
+  }
+
+  /**
+   * Soft-knee limiting curve: unity below the knee, asymptotic to ±1 above it.
+   * Normal playing levels pass through untouched; only peaks are shaped.
+   */
+  _makeLimiterCurve(knee = 0.7, n = 4096) {
+    const curve = new Float32Array(n);
+    const span = 1 - knee;
+    for (let i = 0; i < n; i++) {
+      const x = (i * 2) / (n - 1) - 1;
+      const a = Math.abs(x);
+      const y = a <= knee ? a : knee + span * Math.tanh((a - knee) / span);
+      curve[i] = x < 0 ? -y : y;
+    }
+    return curve;
+  }
+
+  /**
+   * Mute or unmute the output without touching the master volume.
+   * @param {boolean} muted
+   */
+  setMuted(muted) {
+    if (this.muteNode) {
+      this.muteNode.gain.setTargetAtTime(muted ? 0 : 1, this.context.currentTime, 0.01);
+    }
   }
 
   // ─── Bridge Mode (Core Audio via Swift AudioBridge) ───────────────────
@@ -183,8 +245,26 @@ export class AudioEngine {
 
     this._bridgeDeviceId = deviceId;
     this._bridgeChannel = channel;
+    this._maxChunkSamples = 0;
 
     return new Promise((resolve, reject) => {
+      // The bridge can fail in ways that produce no 'capturing' status at all
+      // (device busy, bad device id, socket closed on us). Every one of those
+      // paths has to settle this promise, or the caller awaits forever.
+      let settled = false;
+      const settle = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        this._pendingStart = null;
+        if (err) reject(err); else resolve();
+      };
+      const timeoutId = setTimeout(
+        () => settle(new Error('AudioBridge did not start capturing within 5s.')),
+        5000,
+      );
+      this._pendingStart = settle;
+
       try {
         // Connect to the WebSocket bridge
         this._ws = new WebSocket(this.BRIDGE_WS_URL);
@@ -210,8 +290,16 @@ export class AudioEngine {
 
             // Debug: count incoming audio messages
             this._wsAudioMsgCount = (this._wsAudioMsgCount || 0) + 1;
-            if (this._wsAudioMsgCount <= 3 || this._wsAudioMsgCount % 1000 === 0) {
+            if (DEBUG && (this._wsAudioMsgCount <= 3 || this._wsAudioMsgCount % 1000 === 0)) {
               console.log(`[AudioEngine] WS audio msg #${this._wsAudioMsgCount}: ${float32Data.length} samples, useSAB=${this._useSAB}, worklet=${!!this._workletNode}`);
+            }
+
+            // Size the worklet's pre-fill and latency cap to the real capture
+            // cadence. A cap below one chunk makes the reader trim audio away
+            // and then starve again on every burst.
+            if (float32Data.length > this._maxChunkSamples) {
+              this._maxChunkSamples = float32Data.length;
+              this._sendTransportConfig();
             }
 
             if (this._useSAB && this._ringBufferView && this._controlView) {
@@ -227,7 +315,7 @@ export class AudioEngine {
             // JSON control message
             try {
               const msg = JSON.parse(event.data);
-              this._handleBridgeMessage(msg, resolve);
+              this._handleBridgeMessage(msg, settle);
             } catch (e) {
               console.warn('[AudioEngine] Invalid bridge message:', event.data);
             }
@@ -238,7 +326,7 @@ export class AudioEngine {
           console.error('[AudioEngine] Bridge WebSocket error:', err);
           this._bridgeConnected = false;
           this.onBridgeStatus?.(false, 'Connection error');
-          reject(new Error('WebSocket connection failed. Is the AudioBridge running?'));
+          settle(new Error('WebSocket connection failed. Is the AudioBridge running?'));
         };
 
         this._ws.onclose = () => {
@@ -248,9 +336,10 @@ export class AudioEngine {
           if (this.isRunning) {
             this.isRunning = false;
           }
+          settle(new Error('AudioBridge closed the connection before capture started.'));
         };
       } catch (err) {
-        reject(err);
+        settle(err);
       }
     });
   }
@@ -266,12 +355,22 @@ export class AudioEngine {
     let len = samples.length;
 
     if (len === 0) return;
-    if (len > capacity) {
-      samples = samples.subarray(len - capacity);
-      len = capacity;
-    }
 
-    let wp = Atomics.load(ctrl, CTRL_WRITE_POS);
+    const wp = Atomics.load(ctrl, CTRL_WRITE_POS);
+    const rp = Atomics.load(ctrl, CTRL_READ_POS);
+
+    // One slot stays empty so full and empty remain distinguishable.
+    const free = capacity - 1 - ((wp - rp + capacity) % capacity);
+
+    if (len > free) {
+      // Never run the write cursor past the read cursor: that corrupts the
+      // reader's view of how much is buffered. Keep the newest samples that
+      // fit — dropping the oldest is what a live monitor wants.
+      this._sabOverflowCount += len - free;
+      if (free === 0) return;
+      samples = samples.subarray(len - free);
+      len = free;
+    }
 
     // Write into ring buffer, handling wrap-around
     const spaceToEnd = capacity - wp;
@@ -287,20 +386,47 @@ export class AudioEngine {
   }
 
   /**
+   * Tell the worklet how much to buffer, derived from the capture chunk size.
+   * Pre-fill covers one burst; the cap allows a little jitter on top; both are
+   * bounded by the ring so they can never starve the reader permanently.
+   */
+  _sendTransportConfig() {
+    if (!this._workletNode) return;
+    const chunk = this._maxChunkSamples || 512;
+    const preFill = Math.min(Math.max(chunk, 512), RING_BUFFER_SIZE >> 2);
+    const maxBuffered = Math.min(Math.max(Math.round(chunk * 1.75), 2048), RING_BUFFER_SIZE >> 1);
+    this._workletNode.port.postMessage({
+      type: 'config',
+      inputSampleRate: this._bridgeSampleRate,
+      preFill,
+      maxBuffered,
+      debug: DEBUG,
+    });
+    if (DEBUG) {
+      const ms = (maxBuffered / this._bridgeSampleRate) * 1000;
+      console.log(`[AudioEngine] Transport sized for ${chunk}-sample capture chunks — preFill ${preFill}, cap ${maxBuffered} (${ms.toFixed(0)}ms)`);
+    }
+  }
+
+  /**
    * Handle JSON messages from the bridge.
    */
-  _handleBridgeMessage(msg, resolveStart) {
+  _handleBridgeMessage(msg, settleStart) {
     switch (msg.type) {
       case 'status':
         if (msg.status === 'capturing') {
           this._bridgeSampleRate = msg.sampleRate || 48000;
           console.log(`[AudioEngine] Bridge capturing — device ${msg.deviceId}, channel ${msg.channel + 1}, ${this._bridgeSampleRate}Hz`);
 
-          // Create AudioWorklet node and wire it into the graph
+          // Create AudioWorklet node and wire it into the graph. The worklet
+          // resamples when the interface does not run at the context rate.
           this._setupWorkletNode();
           this.isRunning = true;
-          this.onBridgeStatus?.(true, `Capturing — Ch ${msg.channel + 1} @ ${this._bridgeSampleRate}Hz`);
-          resolveStart?.();
+          const rateNote = Math.abs(this._bridgeSampleRate - this.context.sampleRate) > 1
+            ? ` (resampled from ${this._bridgeSampleRate}Hz)`
+            : '';
+          this.onBridgeStatus?.(true, `Capturing — Ch ${msg.channel + 1} @ ${this.context.sampleRate}Hz${rateNote}`);
+          settleStart?.();
         } else if (msg.status === 'stopped') {
           this.isRunning = false;
           this.onBridgeStatus?.(true, 'Stopped');
@@ -316,7 +442,8 @@ export class AudioEngine {
 
       case 'error':
         console.error('[AudioEngine] Bridge error:', msg.message);
-        this.onBridgeStatus?.(true, `Error: ${msg.message}`);
+        this.onBridgeStatus?.(false, `Error: ${msg.message}`);
+        settleStart?.(new Error(msg.message || 'AudioBridge reported an error.'));
         break;
     }
   }
@@ -335,10 +462,14 @@ export class AudioEngine {
       Atomics.store(this._controlView, CTRL_WRITE_POS, 0);
       Atomics.store(this._controlView, CTRL_READ_POS, 0);
     }
+    this._sabOverflowCount = 0;
 
     try {
       // Build processor options — pass SAB references if available
-      const processorOptions = {};
+      const processorOptions = {
+        debug: DEBUG,
+        inputSampleRate: this._bridgeSampleRate,
+      };
       if (this._useSAB) {
         processorOptions.ringBufferSAB = this._ringBufferSAB;
         processorOptions.controlSAB = this._controlSAB;
@@ -361,14 +492,17 @@ export class AudioEngine {
     this._workletNode.port.onmessage = (event) => {
       if (event.data.type === 'health') {
         const h = event.data;
-        console.log(`[AudioEngine] Buffer: ${h.fillPercent}% full (${h.buffered}/${h.capacity}), underruns: ${h.underruns}, mode: ${h.mode}, preFilled: ${h.preFilled}, postMsgs: ${h.postMsgCount}`);
-        this.onBufferHealth?.(event.data);
+        console.log(`[AudioEngine] Buffer: ${h.fillPercent}% full (${h.buffered}/${h.capacity}), underruns: ${h.underruns}, trims: ${h.trims}, overflows: ${this._sabOverflowCount}, ratio: ${h.ratio.toFixed(4)}, mode: ${h.mode}`);
+        this.onBufferHealth?.({ ...h, overflows: this._sabOverflowCount });
       }
     };
 
     // Connect: workletNode → inputGain → analyserInput → [effects] → masterGain
     this._workletNode.connect(this.inputGainNode);
     this.inputGainNode.connect(this.analyserInput);
+
+    // Chunks may already have arrived before the node existed.
+    if (this._maxChunkSamples > 0) this._sendTransportConfig();
 
     this.rebuildChain();
 
@@ -506,12 +640,23 @@ export class AudioEngine {
    * Stop all audio input (bridge or browser).
    */
   stopInput() {
-    // Stop bridge
-    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-      this._ws.send(JSON.stringify({ command: 'stop' }));
-      this._ws.close();
+    // A start that is still in flight has to be told it lost the race.
+    this._pendingStart?.(new Error('Input was stopped before capture started.'));
+    this._pendingStart = null;
+
+    // Stop bridge. A socket still in CONNECTING must be closed too — dropping
+    // the reference leaves it to open behind our back and keep streaming.
+    if (this._ws) {
+      const ws = this._ws;
+      this._ws = null;
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ command: 'stop' }));
+        }
+      } catch (e) { /* socket already gone */ }
+      try { ws.close(); } catch (e) { /* already closing */ }
     }
-    this._ws = null;
 
     if (this._workletNode) {
       this._workletNode.port.postMessage('reset');
@@ -643,6 +788,9 @@ export class AudioEngine {
       localSource: !!this._localSourceNode,
       bypassAll: this.bypassAll,
       transport: this._useSAB ? 'SharedArrayBuffer' : 'postMessage',
+      captureSampleRate: this._bridgeSampleRate,
+      overflows: this._sabOverflowCount,
+      muted: this.muteNode ? this.muteNode.gain.value < 0.5 : false,
     };
   }
 
