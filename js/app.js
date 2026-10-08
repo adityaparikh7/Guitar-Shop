@@ -4,6 +4,8 @@
 import { AudioEngine } from './audio-engine.js';
 import { NoiseGate, Compressor, EnvelopeFilter, Boost, Overdrive, Distortion, Phaser, Flanger, Chorus, Delay, Reverb, EQ } from './effects.js';
 import { AmpSim } from './amp-sim.js';
+import { AMP_VOICES, CAB_MODELS, DEFAULT_VOICE, DEFAULT_CAB } from './amp-models.js';
+import { CaptureLibrary, describeCapture } from './capture-library.js';
 import { Visualizer } from './visualizer.js';
 import { Tuner } from './tuner.js';
 import { PresetManager } from './presets.js';
@@ -21,6 +23,14 @@ class App {
     this.tuner = null;
     this.testSignal = null;
     this.presetManager = new PresetManager();
+    this.library = new CaptureLibrary();
+    // Library metadata by id, for the amp and cab pickers.
+    this._libraryIndex = new Map();
+    // The cab the player had before a with-cab capture switched it off, so it
+    // can come back when they move to an amp that needs one.
+    this._cabBeforeAutoOff = null;
+    // Latest load report from the amp, per slot ('amp' / 'cab').
+    this._ampStatus = { amp: null, cab: null };
     this._testProgressRAF = null;
     this._knobDragState = null;
     this._audioInitialized = false;
@@ -42,6 +52,7 @@ class App {
     this._setupTestBench();
     this._setupVisMode();
     this._setupTunerButton();
+    this._setupAmpUI();
     this._bindAllKnobs();
 
     // Try bridge first, fall back to browser device enumeration
@@ -184,8 +195,9 @@ class App {
       eq: new EQ(ctx),
     };
 
-    // Create amp
-    this.amp = new AmpSim(ctx);
+    // Create amp — `lib:` model and cab values resolve through the library
+    this.amp = new AmpSim(ctx, { library: this.library });
+    this.amp.onStatus = (status) => this._onAmpStatus(status);
 
     // Create tuner
     this.tuner = new Tuner(ctx);
@@ -394,17 +406,6 @@ class App {
     this._bindKnob('amp-treble', (v) => this._setAmpParam('treble', v));
     this._bindKnob('amp-presence', (v) => this._setAmpParam('presence', v));
     this._bindKnob('amp-master', (v) => this._setAmpParam('master', v));
-
-    // Amp model selector
-    const modelSelect = document.getElementById('amp-model');
-    if (modelSelect) {
-      modelSelect.addEventListener('change', (e) => {
-        if (this._currentPreset && this._currentPreset.amp) {
-          this._currentPreset.amp.params.model = e.target.value;
-        }
-        if (this._audioInitialized && this.amp) this.amp.setModel(e.target.value);
-      });
-    }
   }
 
   /**
@@ -691,11 +692,13 @@ class App {
       if (led) led.classList.toggle('on', fxData.enabled);
     }
 
-    // Apply amp model
-    if (preset.amp) {
-      const modelSelect = document.getElementById('amp-model');
-      if (modelSelect) modelSelect.value = preset.amp.params.model;
+    // Presets saved before the cab picker existed get their voice's usual cab.
+    if (preset.amp && preset.amp.params.cab === undefined) {
+      preset.amp.params.cab = AMP_VOICES[preset.amp.params.model]?.defaultCab ?? DEFAULT_CAB;
     }
+    this._cabBeforeAutoOff = null;
+    this._ampStatus = { amp: null, cab: null };
+    this._syncAmpSelects();
 
     // Sync knob visuals
     this._syncKnobsFromPreset(preset);
@@ -895,13 +898,6 @@ class App {
         this._loadIRFile(this.effects.reverb, 'reverb impulse response');
       });
     }
-    const cabIRBtn = document.getElementById('cab-load-ir');
-    if (cabIRBtn) {
-      cabIRBtn.addEventListener('click', async () => {
-        if (!this._audioInitialized) await this.initAudio({ requestMicPermission: false });
-        this._loadIRFile(this.amp, 'cabinet impulse response');
-      });
-    }
   }
 
   _loadIRFile(target, label = 'impulse response') {
@@ -913,8 +909,7 @@ class App {
       if (!file) return;
       try {
         const arrayBuffer = await file.arrayBuffer();
-        if (target.loadIR) await target.loadIR(arrayBuffer);
-        else if (target.loadCabIR) await target.loadCabIR(arrayBuffer);
+        await target.loadIR(arrayBuffer);
         console.log(`[App] Loaded ${label} — ${file.name}`);
       } catch (err) {
         // Without this the rejection was swallowed and the IR silently stayed
@@ -924,6 +919,296 @@ class App {
       }
     });
     input.click();
+  }
+
+  // ─── Amp: models, cabinets and the capture library ───
+
+  /**
+   * Wire the amp's model and cab pickers, the load/remove buttons and drag and
+   * drop. Runs before any AudioContext exists: IndexedDB does not need one, so
+   * the library is listed straight away and choices made now are replayed by
+   * _applyCurrentPresetToAudio() once audio starts.
+   */
+  _setupAmpUI() {
+    const modelSelect = document.getElementById('amp-model');
+    const cabSelect = document.getElementById('amp-cab');
+    const cabToggle = document.getElementById('amp-capture-cab');
+    const panel = document.getElementById('amp-panel');
+
+    modelSelect?.addEventListener('change', () => this._chooseModel(modelSelect.value));
+    cabSelect?.addEventListener('change', () => this._chooseCab(cabSelect.value));
+
+    document.getElementById('amp-load-nam')?.addEventListener('click', () => this._pickCaptureFile('amp'));
+    document.getElementById('cab-load')?.addEventListener('click', () => this._pickCaptureFile('cab'));
+    document.getElementById('amp-remove')?.addEventListener('click', () => this._removeCapture('amp'));
+    document.getElementById('cab-remove')?.addEventListener('click', () => this._removeCapture('cab'));
+
+    // Whether a capture already contains its cabinet is in the file's metadata
+    // when the capturer filled it in — this is the override when they did not.
+    cabToggle?.addEventListener('change', async () => {
+      const id = this._libraryId(this._currentPreset?.amp?.params.model);
+      const entry = id && this._libraryIndex.get(id);
+      if (!entry) return;
+      entry.includesCab = cabToggle.checked;
+      try { await this.library.update(id, { includesCab: cabToggle.checked }); } catch (e) { console.warn('[App] Could not save capture setting:', e); }
+      this._applyCabRule(cabToggle.checked);
+      this._renderAmpSelects();
+    });
+
+    // Drop a .nam or an IR anywhere on the amp. Over the cab row it goes to
+    // the cab slot; elsewhere a .nam is an amp and audio is a cab.
+    if (panel) {
+      ['dragenter', 'dragover'].forEach(ev => panel.addEventListener(ev, (e) => {
+        e.preventDefault();
+        panel.classList.add('dragging');
+      }));
+      ['dragleave', 'dragend'].forEach(ev => panel.addEventListener(ev, (e) => {
+        if (ev === 'dragleave' && panel.contains(e.relatedTarget)) return;
+        panel.classList.remove('dragging');
+      }));
+      panel.addEventListener('drop', (e) => {
+        e.preventDefault();
+        panel.classList.remove('dragging');
+        const file = e.dataTransfer?.files?.[0];
+        if (!file) return;
+        const overCab = !!e.target.closest?.('#amp-cab-section');
+        const slot = !overCab && /\.nam$/i.test(file.name) ? 'amp' : 'cab';
+        this._importCapture(file, slot);
+      });
+    }
+
+    this._refreshAmpLibrary();
+  }
+
+  /** `lib:<id>` → id, anything else → null. */
+  _libraryId(value) {
+    return typeof value === 'string' && value.startsWith('lib:') ? value.slice(4) : null;
+  }
+
+  /** Re-read the library and rebuild both pickers. */
+  async _refreshAmpLibrary() {
+    try {
+      const entries = [...await this.library.list('amp'), ...await this.library.list('cab')];
+      this._libraryIndex = new Map(entries.map(e => [e.id, e]));
+    } catch (e) {
+      console.warn('[App] Could not read the capture library:', e);
+    }
+    this._renderAmpSelects();
+  }
+
+  _renderAmpSelects() {
+    const entries = [...this._libraryIndex.values()];
+    const option = (value, label) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      return opt;
+    };
+    const group = (label, items) => {
+      const g = document.createElement('optgroup');
+      g.label = label;
+      items.forEach(item => g.appendChild(item));
+      return g;
+    };
+
+    const modelSelect = document.getElementById('amp-model');
+    if (modelSelect) {
+      modelSelect.innerHTML = '';
+      modelSelect.appendChild(group('Built-in', Object.entries(AMP_VOICES).map(([k, v]) => option(k, v.label))));
+      const amps = entries.filter(e => e.slot === 'amp');
+      const heads = amps.filter(e => !e.includesCab).map(e => option(`lib:${e.id}`, e.name));
+      const rigs = amps.filter(e => e.includesCab).map(e => option(`lib:${e.id}`, e.name));
+      if (heads.length) modelSelect.appendChild(group('NAM — amp only (heads, DI)', heads));
+      if (rigs.length) modelSelect.appendChild(group('NAM — amp + cab (combos, full rigs)', rigs));
+    }
+
+    const cabSelect = document.getElementById('amp-cab');
+    if (cabSelect) {
+      cabSelect.innerHTML = '';
+      cabSelect.appendChild(group('Built-in', Object.entries(CAB_MODELS).map(([k, v]) => option(k, v.label))));
+      const cabs = entries.filter(e => e.slot === 'cab');
+      const irs = cabs.filter(e => e.kind === 'ir').map(e => option(`lib:${e.id}`, e.name));
+      const nams = cabs.filter(e => e.kind === 'nam').map(e => option(`lib:${e.id}`, e.name));
+      if (irs.length) cabSelect.appendChild(group('Your IRs', irs));
+      if (nams.length) cabSelect.appendChild(group('NAM cab captures', nams));
+      cabSelect.appendChild(option('off', 'Off — no cabinet'));
+    }
+
+    this._syncAmpSelects();
+  }
+
+  /** Point both pickers at the current preset's model and cab, and refresh the info lines. */
+  _syncAmpSelects() {
+    const params = this._currentPreset?.amp?.params;
+    if (!params) return;
+    const show = (select, value) => {
+      if (!select) return;
+      // A preset can name a capture that has since been removed.
+      if (![...select.options].some(o => o.value === value)) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = 'Missing capture';
+        opt.dataset.missing = 'true';
+        select.prepend(opt);
+      }
+      select.value = value;
+      // Drop stale "missing" placeholders that are no longer selected.
+      [...select.querySelectorAll('option[data-missing]')].forEach(o => { if (o.value !== value) o.remove(); });
+    };
+    show(document.getElementById('amp-model'), params.model);
+    show(document.getElementById('amp-cab'), params.cab);
+    this._renderAmpInfo();
+  }
+
+  _renderAmpInfo() {
+    const params = this._currentPreset?.amp?.params || {};
+    const ampId = this._libraryId(params.model);
+    const cabId = this._libraryId(params.cab);
+    const ampStatus = this._ampStatus.amp;
+    const cabStatus = this._ampStatus.cab;
+
+    const describe = (id, status) => {
+      if (status?.state === 'error') return { text: status.error, cls: 'error' };
+      const entry = this._libraryIndex.get(id) || status?.entry;
+      if (!entry) return { text: 'This capture is no longer in your library.', cls: 'error' };
+      if (status?.state === 'loading' && status.id === id) return { text: `Loading ${entry.name}…`, cls: '' };
+      const detail = describeCapture(entry);
+      let text = detail ? `${entry.name} — ${detail}` : entry.name;
+      let cls = '';
+      if (status?.state === 'ready' && status.id === id && status.rateMismatch) {
+        text += ` · trained at ${(status.rateMismatch / 1000).toFixed(1)}kHz, playing at ${(this.engine.context.sampleRate / 1000).toFixed(1)}kHz — the tone will be slightly off`;
+        cls = 'warn';
+      }
+      return { text, cls };
+    };
+
+    // Amp: the bar shows for a capture, and for an error that fell back to built-in.
+    const bar = document.getElementById('amp-capture-bar');
+    const info = document.getElementById('amp-capture-info');
+    const toggle = document.getElementById('amp-capture-cab');
+    const ampError = ampStatus?.state === 'error' ? ampStatus : null;
+    if (bar && info) {
+      bar.hidden = !ampId && !ampError;
+      const d = ampId ? describe(ampId, ampStatus) : ampError ? { text: `${ampError.error} Using the built-in amp.`, cls: 'error' } : { text: '', cls: '' };
+      info.textContent = d.text;
+      info.className = `amp-capture-info ${d.cls}`.trim();
+    }
+    if (toggle) {
+      toggle.closest('label').hidden = !ampId;
+      toggle.checked = !!(ampId && this._libraryIndex.get(ampId)?.includesCab);
+    }
+    const ampRemove = document.getElementById('amp-remove');
+    if (ampRemove) ampRemove.hidden = !(ampId && this._libraryIndex.has(ampId));
+
+    const cabInfo = document.getElementById('cab-info');
+    const cabError = cabStatus?.state === 'error' ? cabStatus : null;
+    if (cabInfo) {
+      const d = cabId ? describe(cabId, cabStatus) : cabError ? { text: `${cabError.error} Using the built-in 4x12.`, cls: 'error' } : { text: '', cls: '' };
+      cabInfo.textContent = d.text;
+      cabInfo.className = `amp-capture-info amp-cab-info ${d.cls}`.trim();
+    }
+    const cabRemove = document.getElementById('cab-remove');
+    if (cabRemove) cabRemove.hidden = !(cabId && this._libraryIndex.has(cabId));
+  }
+
+  _chooseModel(value) {
+    this._ampStatus.amp = null;
+    this._setAmpParam('model', value);
+    const entry = this._libraryIndex.get(this._libraryId(value));
+    this._applyCabRule(!!entry?.includesCab);
+    this._syncAmpSelects();
+  }
+
+  _chooseCab(value) {
+    // An explicit choice; nothing to restore later.
+    this._cabBeforeAutoOff = null;
+    this._ampStatus.cab = null;
+    this._setAmpParam('cab', value);
+    this._syncAmpSelects();
+  }
+
+  /**
+   * A capture recorded through a mic'd speaker already has its cabinet, so a
+   * second one would muffle it: switch the cab off and remember what it was.
+   * Moving on to an amp that needs a cab brings that one back.
+   */
+  _applyCabRule(includesCab) {
+    const params = this._currentPreset?.amp?.params;
+    if (!params) return;
+    if (includesCab) {
+      if (params.cab !== 'off') {
+        this._cabBeforeAutoOff = params.cab;
+        this._ampStatus.cab = null;
+        this._setAmpParam('cab', 'off');
+      }
+    } else if (params.cab === 'off' && this._cabBeforeAutoOff) {
+      const restore = this._cabBeforeAutoOff;
+      this._cabBeforeAutoOff = null;
+      this._ampStatus.cab = null;
+      this._setAmpParam('cab', restore);
+    }
+    this._syncAmpSelects();
+  }
+
+  _pickCaptureFile(slot) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = slot === 'amp' ? '.nam' : '.nam,.wav,.aif,.aiff,.flac,audio/*';
+    input.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) this._importCapture(file, slot);
+    });
+    input.click();
+  }
+
+  /**
+   * Add a .nam capture or an IR to the library and select it.
+   * @param {File} file
+   * @param {'amp'|'cab'} slot
+   */
+  async _importCapture(file, slot) {
+    let entry;
+    try {
+      entry = await this.library.importFile(file, slot);
+    } catch (e) {
+      console.error('[App] Could not import capture:', e);
+      alert(e.message || `Could not load "${file.name}".`);
+      return;
+    }
+    await this._refreshAmpLibrary();
+    if (slot === 'amp') this._chooseModel(`lib:${entry.id}`);
+    else this._chooseCab(`lib:${entry.id}`);
+    console.log(`[App] Loaded ${entry.kind === 'nam' ? 'NAM capture' : 'IR'} "${entry.name}" into the ${slot} slot`);
+    return entry;
+  }
+
+  async _removeCapture(slot) {
+    const params = this._currentPreset?.amp?.params;
+    const id = this._libraryId(slot === 'amp' ? params?.model : params?.cab);
+    const entry = id && this._libraryIndex.get(id);
+    if (!entry) return;
+    if (!confirm(`Remove "${entry.name}" from your library?\n\nPresets that use it will fall back to a built-in ${slot === 'amp' ? 'amp' : 'cabinet'}.`)) return;
+    try {
+      await this.library.remove(id);
+    } catch (e) {
+      console.error('[App] Could not remove capture:', e);
+      alert(`Could not remove "${entry.name}".`);
+      return;
+    }
+    await this._refreshAmpLibrary();
+    if (slot === 'amp') this._chooseModel(DEFAULT_VOICE);
+    else this._chooseCab(this._cabBeforeAutoOff ?? DEFAULT_CAB);
+  }
+
+  /** Load reports from AmpSim. On failure it has already fallen back; mirror that here. */
+  _onAmpStatus(status) {
+    this._ampStatus[status.slot] = status;
+    if (status.state === 'error' && status.fallback) {
+      const params = this._currentPreset?.amp?.params;
+      if (params) params[status.slot === 'amp' ? 'model' : 'cab'] = status.fallback;
+      if (status.slot === 'amp') this._applyCabRule(false);
+    }
+    this._syncAmpSelects();
   }
 
   // ─── Test Bench ───

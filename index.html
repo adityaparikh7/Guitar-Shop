@@ -546,17 +546,27 @@
     <!-- ═══ AMP ═══ -->
     <section class="amp-section">
       <h2 class="section-title">Amplifier</h2>
-      <div class="amp-panel">
+      <div class="amp-panel" id="amp-panel">
         <div class="amp-header">
           <span class="amp-title">Amplifier</span>
           <div class="amp-model-selector">
             <label for="amp-model">Model</label>
+            <!-- Options are built at runtime: the built-in voices plus any NAM
+                 captures in the library. -->
             <select id="amp-model">
-              <option value="clean">Clean</option>
-              <option value="crunch">Crunch</option>
-              <option value="highgain">High Gain</option>
+              <option value="clean">Clean — blackface</option>
+              <option value="crunch">Crunch — plexi</option>
+              <option value="highgain">High Gain — modern</option>
             </select>
+            <button id="amp-load-nam" class="amp-btn" title="Load a Neural Amp Modeler capture (.nam) — or drop one on the amp">Load .nam…</button>
+            <button id="amp-remove" class="amp-btn amp-btn-icon" title="Remove this capture from your library" aria-label="Remove this capture from your library" hidden>×</button>
           </div>
+        </div>
+        <div id="amp-capture-bar" class="amp-capture-bar" hidden>
+          <span id="amp-capture-info" class="amp-capture-info" role="status"></span>
+          <label class="amp-capture-toggle" title="Captures recorded through a mic'd speaker already include the cabinet">
+            <input type="checkbox" id="amp-capture-cab"> Includes cab
+          </label>
         </div>
         <div class="amp-knobs">
           <div class="amp-knob-wrapper">
@@ -602,10 +612,20 @@
             <span class="knob-value">7</span>
           </div>
         </div>
-        <div class="amp-cab-section">
-          <span class="knob-label">Cabinet IR</span>
-          <button id="cab-load-ir" class="ir-btn" style="width: auto; margin-top: 0; padding: 6px 16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Load Cabinet IR</button>
+        <div class="amp-cab-section" id="amp-cab-section">
+          <label for="amp-cab" class="knob-label">Cabinet</label>
+          <!-- Built-in cabs, loaded IRs and NAM cab captures; built at runtime. -->
+          <select id="amp-cab">
+            <option value="4x12">4x12 Closed — V30</option>
+            <option value="2x12">2x12 Open — alnico blue</option>
+            <option value="1x12">1x12 Open — jensen</option>
+            <option value="off">Off</option>
+          </select>
+          <button id="cab-load" class="ir-btn amp-cab-btn" title="Load a cabinet impulse response (.wav) or NAM capture (.nam) — or drop one here"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Load IR / .nam…</button>
+          <button id="cab-remove" class="ir-btn amp-cab-btn amp-btn-icon" title="Remove this cabinet from your library" aria-label="Remove this cabinet from your library" hidden>×</button>
+          <span id="cab-info" class="amp-capture-info amp-cab-info" role="status"></span>
         </div>
+        <div class="amp-drop-hint">Drop a .nam capture or a cabinet IR</div>
       </div>
     </section>
 

@@ -160,6 +160,7 @@ export class AudioEngine {
       await this.context.audioWorklet.addModule('js/audio-stream-processor.js');
       await this.context.audioWorklet.addModule('js/gate-processor.js');
       await this.context.audioWorklet.addModule('js/envelope-processor.js');
+      await this.context.audioWorklet.addModule('js/amp-processor.js');
       console.log('[AudioEngine] AudioWorklet processors registered');
     } catch (e) {
       console.warn('[AudioEngine] Could not register AudioWorklet:', e);

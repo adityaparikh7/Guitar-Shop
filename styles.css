@@ -844,9 +844,158 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
   gap: 12px;
   position: relative;
   z-index: 1;
+}
+
+.amp-cab-section select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.amp-cab-section select:focus,
+.amp-model-selector select:focus-visible {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.amp-model-selector select {
+  max-width: 260px;
+}
+
+.amp-cab-section .knob-label {
+  font-size: 10px;
+  color: var(--text-label);
+}
+
+.ir-btn.amp-cab-btn {
+  width: auto;
+  margin-top: 0;
+  padding: 6px 16px;
+  border-color: var(--border-bright);
+  color: var(--text-secondary);
+}
+
+/* Buttons on the chrome header plate */
+.amp-btn {
+  padding: 6px 10px;
+  border: 1px solid var(--chrome-shadow);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, var(--chrome-highlight), var(--chrome-base));
+  color: var(--plate-ink);
+  font-family: 'Inter', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.amp-btn:hover {
+  background: linear-gradient(180deg, var(--chrome-highlight), var(--chrome-highlight));
+}
+
+.amp-btn:focus-visible,
+.ir-btn:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
+.amp-btn-icon {
+  padding: 4px 9px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* NAM capture details, under the header plate */
+.amp-capture-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: -12px 0 20px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.35);
+  position: relative;
+  z-index: 1;
+}
+
+.amp-capture-info {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.amp-capture-info.error {
+  color: var(--accent-red);
+}
+
+.amp-capture-info.warn {
+  color: var(--led-amber);
+}
+
+.amp-cab-info {
+  flex-basis: 100%;
+  text-align: center;
+}
+
+.amp-cab-info:empty {
+  display: none;
+}
+
+.amp-capture-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-label);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.amp-capture-toggle input {
+  accent-color: var(--brass);
+}
+
+/* Drop target — only visible while a file is dragged over the amp */
+.amp-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--brass);
+  border-radius: inherit;
+  background: rgba(10, 12, 20, 0.88);
+  color: var(--brass-light);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.amp-panel.dragging .amp-drop-hint {
+  display: flex;
 }
 
 /* ─── Visualizer ─── */
@@ -1227,6 +1376,25 @@ body::before {
 
   .amp-knobs {
     gap: 16px;
+  }
+
+  .amp-panel {
+    padding: 20px 16px;
+  }
+
+  .amp-header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .amp-model-selector {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .amp-model-selector select {
+    flex: 1 1 160px;
+    min-width: 0;
   }
 
   .preset-bar {

@@ -19,7 +19,7 @@ export const FACTORY_PRESETS = {
       eq: { enabled: false, params: { bass: 0, mid: 0, treble: 2 } },
     },
     master: { volume: 0.8, input: 0.5 },
-    amp: { enabled: true, params: { gain: 0.2, bass: 0.5, mid: 0.5, treble: 0.6, presence: 0.5, master: 0.7, model: 'clean' } },
+    amp: { enabled: true, params: { gain: 0.2, bass: 0.5, mid: 0.5, treble: 0.6, presence: 0.5, master: 0.7, model: 'clean', cab: '2x12' } },
   },
   'Blues': {
     effects: {
@@ -37,7 +37,7 @@ export const FACTORY_PRESETS = {
       eq: { enabled: true, params: { bass: 2, mid: 1, treble: -1 } },
     },
     master: { volume: 0.8, input: 0.5 },
-    amp: { enabled: true, params: { gain: 0.45, bass: 0.55, mid: 0.6, treble: 0.5, presence: 0.4, master: 0.65, model: 'crunch' } },
+    amp: { enabled: true, params: { gain: 0.45, bass: 0.55, mid: 0.6, treble: 0.5, presence: 0.4, master: 0.65, model: 'crunch', cab: '2x12' } },
   },
   'Rock': {
     effects: {
@@ -55,7 +55,7 @@ export const FACTORY_PRESETS = {
       eq: { enabled: true, params: { bass: 3, mid: 2, treble: 1 } },
     },
     master: { volume: 0.8, input: 0.5 },
-    amp: { enabled: true, params: { gain: 0.6, bass: 0.6, mid: 0.55, treble: 0.6, presence: 0.5, master: 0.7, model: 'crunch' } },
+    amp: { enabled: true, params: { gain: 0.6, bass: 0.6, mid: 0.55, treble: 0.6, presence: 0.5, master: 0.7, model: 'crunch', cab: '4x12' } },
   },
   'Metal': {
     effects: {
@@ -73,7 +73,7 @@ export const FACTORY_PRESETS = {
       eq: { enabled: true, params: { bass: 4, mid: -2, treble: 3 } },
     },
     master: { volume: 0.8, input: 0.5 },
-    amp: { enabled: true, params: { gain: 0.85, bass: 0.7, mid: 0.4, treble: 0.7, presence: 0.6, master: 0.7, model: 'highgain' } },
+    amp: { enabled: true, params: { gain: 0.85, bass: 0.7, mid: 0.4, treble: 0.7, presence: 0.6, master: 0.7, model: 'highgain', cab: '4x12' } },
   },
   'Ambient': {
     effects: {
@@ -91,7 +91,7 @@ export const FACTORY_PRESETS = {
       eq: { enabled: true, params: { bass: -2, mid: 0, treble: 4 } },
     },
     master: { volume: 0.8, input: 0.5 },
-    amp: { enabled: true, params: { gain: 0.2, bass: 0.4, mid: 0.5, treble: 0.7, presence: 0.6, master: 0.6, model: 'clean' } },
+    amp: { enabled: true, params: { gain: 0.2, bass: 0.4, mid: 0.5, treble: 0.7, presence: 0.6, master: 0.6, model: 'clean', cab: '2x12' } },
   },
 };
 
