@@ -1,16 +1,23 @@
 /**
  * GateProcessor — AudioWorklet-based noise gate.
  *
- * Runs at audio rate (128 samples per quantum = ~2.6ms @ 48kHz) instead of
- * the previous requestAnimationFrame approach (~16ms). This eliminates the
- * main-thread polling overhead and provides 6x faster gate response.
+ * Runs per sample, so it opens within a millisecond of the pick rather than at
+ * the next render quantum. A gate that opens and shuts on the same level, with
+ * a short release, chatters on every decaying note and chops the tail off; so
+ * this one has:
+ *
+ *   - a peak detector with a short (10ms) release, so the level it sees is
+ *     smooth but still catches the attack;
+ *   - hysteresis: it opens at the threshold and only closes 6dB below it;
+ *   - a hold of 50ms after the level drops below the close point;
+ *   - a fast (~0.5ms) open and a gentle (~100ms) exponential fade when it closes.
  *
  * Parameters (AudioParam):
  *   threshold: Gate threshold in dB (default: -50)
- *
- * The gate uses a simple RMS measurement over each 128-sample quantum,
- * with smooth attack/release to avoid clicks.
  */
+
+const HYSTERESIS_DB = 6;
+const HOLD_SECONDS = 0.05;
 
 class GateProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
@@ -21,13 +28,14 @@ class GateProcessor extends AudioWorkletProcessor {
 
   constructor() {
     super();
-    this._gain = 1.0;
-    this._attackCoeff = 0.0;
-    this._releaseCoeff = 0.0;
-    this._sampleRate = sampleRate; // global in AudioWorklet scope
-    // Smooth attack: ~1ms, release: ~5ms
-    this._attackCoeff = 1.0 - Math.exp(-1.0 / (this._sampleRate * 0.001));
-    this._releaseCoeff = 1.0 - Math.exp(-1.0 / (this._sampleRate * 0.005));
+    this._gain = 0;
+    this._env = 0;
+    this._open = false;
+    this._hold = 0;
+    this._holdSamples = Math.round(HOLD_SECONDS * sampleRate);
+    this._detectorRelease = Math.exp(-1 / (0.01 * sampleRate));
+    this._attackCoeff = 1 - Math.exp(-1 / (0.0005 * sampleRate));
+    this._releaseCoeff = 1 - Math.exp(-1 / (0.1 * sampleRate));
   }
 
   process(inputs, outputs, parameters) {
@@ -38,25 +46,31 @@ class GateProcessor extends AudioWorkletProcessor {
     const inChannel = input[0];
     const outChannel = output[0];
     const threshold = parameters.threshold[0];
+    const openLevel = Math.pow(10, threshold / 20);
+    const closeLevel = Math.pow(10, (threshold - HYSTERESIS_DB) / 20);
     const frameCount = inChannel.length;
 
-    // Compute RMS of this quantum
-    let sum = 0;
     for (let i = 0; i < frameCount; i++) {
-      sum += inChannel[i] * inChannel[i];
-    }
-    const rms = Math.sqrt(sum / frameCount);
-    const db = 20 * Math.log10(rms + 1e-10);
+      const x = inChannel[i];
+      const a = x < 0 ? -x : x;
+      this._env = a > this._env ? a : this._env * this._detectorRelease;
 
-    // Target gain: 1 if above threshold, 0 if below
-    const target = db > threshold ? 1.0 : 0.0;
+      if (this._env >= openLevel) {
+        this._open = true;
+        this._hold = this._holdSamples;
+      } else if (this._open) {
+        if (this._env >= closeLevel) {
+          this._hold = this._holdSamples;
+        } else if (this._hold > 0) {
+          this._hold--;
+        } else {
+          this._open = false;
+        }
+      }
 
-    // Smooth the gain transition per-sample
-    const coeff = target > this._gain ? this._attackCoeff : this._releaseCoeff;
-
-    for (let i = 0; i < frameCount; i++) {
-      this._gain += (target - this._gain) * coeff;
-      outChannel[i] = inChannel[i] * this._gain;
+      const target = this._open ? 1 : 0;
+      this._gain += (target - this._gain) * (this._open ? this._attackCoeff : this._releaseCoeff);
+      outChannel[i] = x * this._gain;
     }
 
     // Copy to other channels

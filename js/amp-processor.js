@@ -1,10 +1,13 @@
 /**
- * Tube Stage Processor — the nonlinear part of the built-in amp.
+ * Tube Stage Processor — the nonlinear stages of the built-in amp and of the
+ * drive pedals.
  *
  * Not an ES module: it lives in the AudioWorkletGlobalScope and only calls
  * registerProcessor(). AmpSim runs two instances, one configured as the
  * preamp (one to three triode stages) and one as the power amp (a push-pull
  * stage with supply sag); the tone stack sits between them as native biquads.
+ * Boost, Overdrive and Distortion each run one instance with a JFET, op-amp
+ * or diode-clipper stage, and keep their tone controls as native biquads too.
  *
  * Why a worklet rather than WaveShaperNodes: every distorting stage needs
  * oversampling, and a WaveShaperNode set to '4x' adds several milliseconds of
@@ -20,6 +23,9 @@
  * same way at every level.
  */
 
+// The amp runs at 4x. A hard-clipping pedal can ask for 8x (processorOptions
+// .oversample): a diode clipper at full gain turns even a high note into a
+// near-square wave, and at 4x its upper harmonics fold back about 44dB down.
 const OVERSAMPLE = 4;
 
 // ─── Polyphase IIR halfband filters ──────────────────────────────────────────
@@ -121,6 +127,9 @@ class Downsampler2x extends HalfbandPaths {
 // 96k↔192k stage only has to clear images above ~72kHz, so it can be loose.
 const COEFS_STAGE_1 = designHalfband(96, 0.02);
 const COEFS_STAGE_2 = designHalfband(96, 0.12);
+// 192k↔384k only has to keep what lands above ~130kHz from folding back below
+// the 96k stage's stopband, so it can be looser still.
+const COEFS_STAGE_3 = designHalfband(96, 0.2);
 
 // ─── Stages ──────────────────────────────────────────────────────────────────
 
@@ -129,27 +138,54 @@ const COEFS_STAGE_2 = designHalfband(96, 0.12);
 // constant one would be.
 const ANTI_DENORMAL = 1e-20;
 
+// Stage kinds, as numbers so the per-sample loop branches cheaply.
+const TRIODE = 0, PUSHPULL = 1, OPAMP = 2, DIODE = 3, JFET = 4;
+const KINDS = { triode: TRIODE, pushpull: PUSHPULL, opamp: OPAMP, diode: DIODE, jfet: JFET };
+
+// Algebraic sigmoid: softer into saturation than tanh, and cheap.
+const sigmoid = (z) => z / Math.sqrt(1 + z * z);
+
 /**
  * Build the runtime state for one stage from its config. Corner frequencies
  * are converted to coefficients at the oversampled rate.
  *
- * Config fields (see AMP_VOICES in amp-models.js):
- *   type      'triode' | 'pushpull'
+ * Config fields (see AMP_VOICES in amp-models.js, DRIVE_STAGES in effects.js):
+ *   type      'triode' | 'pushpull' — tube stages for the amp
+ *             'opamp'  — op-amp with diodes in its feedback loop (Tube Screamer):
+ *                        clean·x + soft-clip(gain path); never fully hard
+ *             'diode'  — op-amp into diodes to ground (RAT, DS-1): a sharper knee
+ *             'jfet'   — a JFET booster: unity-gain soft saturation near `headroom`
  *   gain      [min, max] linear gain across the drive knob (log taper)
  *   bias      operating-point offset (triode) — sets the asymmetry
  *   neg       negative-side headroom relative to positive (triode)
  *   block     how far grid-current excursions pull the bias (triode)
  *   sag       supply sag depth (pushpull)
- *   lp, hp    Miller low-pass and coupling high-pass corners, Hz
+ *   pre       high-pass on the gain path ahead of the clipper, Hz (opamp, diode) —
+ *             the Tube Screamer's mid hump, the RAT's tightening
+ *   clean     how much of the dry signal rides alongside the gain path (opamp, diode)
+ *   asym      clipping asymmetry, 0 = symmetric (opamp, diode, jfet)
+ *   knee      diode knee sharpness, 2 = soft … 4 = hard (diode)
+ *   headroom  level the JFET saturates towards (jfet)
+ *   lp, hp    low-pass and coupling high-pass corners, Hz. For the tube stages
+ *             lp is the Miller pole after the tube; for the op-amp stages it is
+ *             the gain path's bandwidth ahead of the clipper, and may be
+ *             [atMinDrive, atMaxDrive] — more gain, less top end.
  */
 function createStage(cfg, rate) {
   const onePole = (hz) => 1 - Math.exp(-2 * Math.PI * hz / rate);
   const timeCoef = (seconds) => 1 - Math.exp(-1 / (seconds * rate));
   const gain = Array.isArray(cfg.gain) ? cfg.gain : [cfg.gain ?? 1, cfg.gain ?? 1];
+  const kind = KINDS[cfg.type] ?? TRIODE;
   const neg = cfg.neg ?? 1.6;
   const bias = cfg.bias ?? 0;
+  const lpRange = Array.isArray(cfg.lp) ? cfg.lp.map(hz => Math.min(hz, rate * 0.45)) : null;
+  // The op-amp and JFET stages centre their asymmetry with an offset whose
+  // slope at rest is normalized out, so a small signal passes at unity.
+  const asym = cfg.asym ?? 0;
+  const sOff = kind === JFET ? Math.tanh(asym) : sigmoid(asym);
+  const sSlope = kind === JFET ? 1 - sOff * sOff : Math.pow(1 + asym * asym, -1.5);
   return {
-    pushpull: cfg.type === 'pushpull',
+    kind,
     gMin: Math.max(1e-6, gain[0]),
     gRatio: Math.max(1e-6, gain[1]) / Math.max(1e-6, gain[0]),
     g: 0,
@@ -164,7 +200,21 @@ function createStage(cfg, rate) {
     env: 0,
     envAtk: timeCoef(cfg.attack ?? 0.004),
     envRel: timeCoef(cfg.release ?? 0.08),
-    lpA: onePole(Math.min(cfg.lp ?? 20000, rate * 0.45)),
+    asym,
+    sOff,
+    invSlope: 1 / sSlope,
+    clean: cfg.clean ?? (kind === OPAMP ? 1 : 0),
+    knee: cfg.knee ?? 2.5,
+    invKnee: 1 / (cfg.knee ?? 2.5),
+    negScale: 1 + asym,
+    headroom: cfg.headroom ?? 1,
+    invHeadroom: 1 / (cfg.headroom ?? 1),
+    hasPre: cfg.pre > 0,
+    preA: Math.exp(-2 * Math.PI * (cfg.pre ?? 0) / rate),
+    preX: 0,
+    preY: 0,
+    lpRange,
+    lpA: onePole(lpRange ? lpRange[0] : Math.min(cfg.lp ?? 20000, rate * 0.45)),
     lp: 0,
     hpA: Math.exp(-2 * Math.PI * (cfg.hp ?? 10) / rate),
     hpX: 0,
@@ -181,12 +231,16 @@ class TubeStageProcessor extends AudioWorkletProcessor {
 
   constructor(options) {
     super();
-    this._rate = sampleRate * OVERSAMPLE;
+    const factor = options?.processorOptions?.oversample === 8 ? 8 : OVERSAMPLE;
+    this._rate = sampleRate * factor;
     this._up1 = new Upsampler2x(COEFS_STAGE_1);
     this._up2 = new Upsampler2x(COEFS_STAGE_2);
     this._down2 = new Downsampler2x(COEFS_STAGE_2);
     this._down1 = new Downsampler2x(COEFS_STAGE_1);
-    this._os = new Float64Array(OVERSAMPLE);
+    if (factor === 8) {
+      this._up3 = new Upsampler2x(COEFS_STAGE_3);
+      this._down3 = new Downsampler2x(COEFS_STAGE_3);
+    }
 
     // Gain changes glide over ~10ms at the oversampled rate.
     this._smooth = 1 - Math.exp(-1 / (0.01 * this._rate));
@@ -216,6 +270,10 @@ class TubeStageProcessor extends AudioWorkletProcessor {
       const s = stages[i];
       s.gTarget = s.gMin * Math.pow(s.gRatio, drive);
       if (snap) s.g = s.gTarget;
+      if (s.lpRange) {
+        const hz = s.lpRange[0] * Math.pow(s.lpRange[1] / s.lpRange[0], drive);
+        s.lpA = 1 - Math.exp(-2 * Math.PI * hz / this._rate);
+      }
     }
   }
 
@@ -224,18 +282,22 @@ class TubeStageProcessor extends AudioWorkletProcessor {
     const stages = this._stages;
     const smooth = this._smooth;
     this._flip = -this._flip;
+    const dn = this._flip * ANTI_DENORMAL;
     for (let i = 0; i < stages.length; i++) {
       const s = stages[i];
       s.g += (s.gTarget - s.g) * smooth;
       let y;
-      if (s.pushpull) {
+      if (s.kind === PUSHPULL) {
         // Supply sag: the louder the output has been, the less drive the stage
         // gets, so hard chords squash and bloom instead of hitting a wall.
         const u = x * s.g / (1 + s.sag * s.env);
         y = u / Math.sqrt(1 + u * u);
         const level = y < 0 ? -y : y;
         s.env += (level - s.env) * (level > s.env ? s.envAtk : s.envRel);
-      } else {
+        // Miller-capacitance low-pass.
+        s.lp += (y + dn - s.lp) * s.lpA;
+        y = s.lp;
+      } else if (s.kind === TRIODE) {
         const u = x * s.g;
         // Grid current: positive signal swings charge the coupling cap and
         // drag the bias negative, which is what makes the stage feel the pick.
@@ -246,11 +308,45 @@ class TubeStageProcessor extends AudioWorkletProcessor {
         y = s.rest - y; // a common-cathode stage inverts
         const grid = u > 0 ? u : 0;
         s.env += (grid - s.env) * (grid > s.env ? s.envAtk : s.envRel);
+        s.lp += (y + dn - s.lp) * s.lpA;
+        y = s.lp;
+      } else if (s.kind === JFET) {
+        // Square-law-ish: an offset tanh, slope-normalized so small signals
+        // pass at the stage gain, leaning into mostly even harmonics as the
+        // signal approaches the headroom.
+        const z = x * s.g * s.invHeadroom;
+        y = s.headroom * (Math.tanh(z + s.asym) - s.sOff) * s.invSlope;
+        s.lp += (y + dn - s.lp) * s.lpA;
+        y = s.lp;
+      } else {
+        // Op-amp gain path: the pre-emphasis high-pass, the gain, then the
+        // op-amp's bandwidth (which narrows as the gain comes up).
+        let a = x;
+        if (s.hasPre) {
+          const hp = s.preA * (s.preY + a - s.preX);
+          s.preX = a;
+          s.preY = hp;
+          a = hp;
+        }
+        s.lp += (a * s.g + dn - s.lp) * s.lpA;
+        const u = s.lp;
+        if (s.kind === OPAMP) {
+          // Diodes in the feedback loop clip only the gain path; the clean
+          // signal still rides on top, which is the Tube Screamer's
+          // transparency at low drive.
+          y = s.clean * x + (sigmoid(u + s.asym) - s.sOff) * s.invSlope;
+        } else {
+          // Diodes to ground clip everything the op-amp puts out.
+          let v = s.clean * x + u;
+          const n = v < 0 ? s.negScale : 1;
+          v /= n;
+          const m = v < 0 ? -v : v;
+          y = n * v / (s.knee === 2 ? Math.sqrt(1 + m * m) : Math.pow(1 + Math.pow(m, s.knee), s.invKnee));
+        }
       }
-      // Miller-capacitance low-pass, then the coupling-cap high-pass.
-      s.lp += (y + this._flip * ANTI_DENORMAL - s.lp) * s.lpA;
-      const hp = s.hpA * (s.hpY + s.lp - s.hpX);
-      s.hpX = s.lp;
+      // Coupling-cap high-pass: removes the DC that asymmetric clipping makes.
+      const hp = s.hpA * (s.hpY + y - s.hpX);
+      s.hpX = y;
       s.hpY = hp;
       x = hp;
     }
@@ -275,7 +371,13 @@ class TubeStageProcessor extends AudioWorkletProcessor {
 
     const up1 = this._up1, up2 = this._up2, down1 = this._down1, down2 = this._down2;
     const n = output.length;
-    for (let i = 0; i < n; i++) {
+    if (this._up3) {
+      for (let i = 0; i < n; i++) {
+        up1.process(input[i]);
+        const a = up1.o0, b = up1.o1;
+        output[i] = down1.process(this._at96k(a), this._at96k(b));
+      }
+    } else for (let i = 0; i < n; i++) {
       up1.process(input[i]);
       const a = up1.o0, b = up1.o1;
       up2.process(a);
@@ -287,6 +389,25 @@ class TubeStageProcessor extends AudioWorkletProcessor {
       output[i] = down1.process(down2.process(s0, s1), down2.process(s2, s3));
     }
 
+    this._crossfade(output, n);
+    return true;
+  }
+
+  /** 8x only: one 96k sample through the 192k and 384k stages and back. */
+  _at96k(x) {
+    const up2 = this._up2, up3 = this._up3, down3 = this._down3;
+    up2.process(x);
+    const c = up2.o0, d = up2.o1;
+    up3.process(c);
+    const s0 = this._tick(up3.o0);
+    const s1 = this._tick(up3.o1);
+    up3.process(d);
+    const s2 = this._tick(up3.o0);
+    const s3 = this._tick(up3.o1);
+    return this._down2.process(down3.process(s0, s1), down3.process(s2, s3));
+  }
+
+  _crossfade(output, n) {
     // A new voice is swapped in across two render quanta: fade this one out,
     // swap, fade the next one in. Each is under 3ms, short enough not to be
     // heard as a gap and long enough not to click.
@@ -302,7 +423,6 @@ class TubeStageProcessor extends AudioWorkletProcessor {
     } else if (this._pending) {
       this._fade = 1;
     }
-    return true;
   }
 }
 

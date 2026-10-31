@@ -100,7 +100,7 @@ export class CaptureLibrary {
   }
 
   /**
-   * Library entries for one slot ('amp' or 'cab'), without their payloads,
+   * Library entries for one slot ('amp', 'cab' or 'pedal'), without their payloads,
    * sorted by name.
    * @returns {Promise<Array<object>>}
    */
@@ -172,16 +172,17 @@ export class CaptureLibrary {
    *
    * `.nam` files are NAM captures; anything else is treated as an impulse
    * response and must decode as audio. Importing the same file into the same
-   * slot twice returns the existing entry instead of a duplicate.
+   * slot twice returns the existing entry instead of a duplicate. The pedal
+   * slot is one library shared by every pedal's picker.
    *
    * @param {File} file
-   * @param {'amp'|'cab'} slot - which picker the entry belongs to
+   * @param {'amp'|'cab'|'pedal'} slot - which picker the entry belongs to
    * @returns {Promise<object>} the stored entry's metadata
    */
   async importFile(file, slot) {
     const isNam = /\.nam$/i.test(file.name);
-    if (slot === 'amp' && !isNam) {
-      throw new Error('Amp captures must be NAM files (.nam).');
+    if ((slot === 'amp' || slot === 'pedal') && !isNam) {
+      throw new Error(`${slot === 'amp' ? 'Amp' : 'Pedal'} captures must be NAM files (.nam).`);
     }
 
     const existing = (await this.list(slot)).find(e => e.fileName === file.name && e.size === file.size);

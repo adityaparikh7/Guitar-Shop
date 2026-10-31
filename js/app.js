@@ -14,6 +14,25 @@ import { TestSignal, TEST_SIGNALS } from './test-signal.js';
 // Level logging and buffer-health reports are opt-in: append ?debug to the URL.
 const DEBUG = new URLSearchParams(location.search).has('debug');
 
+// Every pedal, by the name its DOM IDs and preset entries use. The bypass
+// buttons, pedal presets and capture pickers are all wired from this table;
+// signal order is the `chain` array in initAudio().
+const EFFECT_CLASSES = {
+  noisegate: NoiseGate,
+  compressor: Compressor,
+  envelopefilter: EnvelopeFilter,
+  boost: Boost,
+  overdrive: Overdrive,
+  distortion: Distortion,
+  phaser: Phaser,
+  flanger: Flanger,
+  chorus: Chorus,
+  delay: Delay,
+  reverb: Reverb,
+  eq: EQ,
+};
+const EFFECT_NAMES = Object.keys(EFFECT_CLASSES);
+
 class App {
   constructor() {
     this.engine = new AudioEngine();
@@ -31,6 +50,8 @@ class App {
     this._cabBeforeAutoOff = null;
     // Latest load report from the amp, per slot ('amp' / 'cab').
     this._ampStatus = { amp: null, cab: null };
+    // Latest capture load report per pedal.
+    this._pedalCaptureStatus = {};
     this._testProgressRAF = null;
     this._knobDragState = null;
     this._audioInitialized = false;
@@ -52,6 +73,7 @@ class App {
     this._setupTestBench();
     this._setupVisMode();
     this._setupTunerButton();
+    this._setupPedalCaptures();
     this._setupAmpUI();
     this._bindAllKnobs();
 
@@ -179,21 +201,13 @@ class App {
 
     const ctx = this.engine.context;
 
-    // Create effects
-    this.effects = {
-      noisegate: new NoiseGate(ctx),
-      compressor: new Compressor(ctx),
-      envelopefilter: new EnvelopeFilter(ctx),
-      boost: new Boost(ctx),
-      overdrive: new Overdrive(ctx),
-      distortion: new Distortion(ctx),
-      phaser: new Phaser(ctx),
-      flanger: new Flanger(ctx),
-      chorus: new Chorus(ctx),
-      delay: new Delay(ctx),
-      reverb: new Reverb(ctx),
-      eq: new EQ(ctx),
-    };
+    // Create effects — `lib:` capture values resolve through the library
+    this.effects = {};
+    for (const [name, EffectClass] of Object.entries(EFFECT_CLASSES)) {
+      const fx = new EffectClass(ctx, { library: this.library });
+      fx.onCaptureStatus = (status) => this._onPedalCaptureStatus(name, status);
+      this.effects[name] = fx;
+    }
 
     // Create amp — `lib:` model and cab values resolve through the library
     this.amp = new AmpSim(ctx, { library: this.library });
@@ -216,7 +230,8 @@ class App {
       this._syncTestBenchUI();
     };
 
-    // Set signal chain
+    // Set signal chain. Delay and reverb sit after the amp, in its FX loop:
+    // in front of a crunch or high-gain voice their tails get distorted.
     const chain = [
       this.effects.noisegate,
       this.effects.compressor,
@@ -227,10 +242,10 @@ class App {
       this.effects.phaser,
       this.effects.flanger,
       this.effects.chorus,
-      this.effects.delay,
-      this.effects.reverb,
       this.effects.eq,
       this.amp,
+      this.effects.delay,
+      this.effects.reverb,
     ];
     this.engine.setEffectsChain(chain);
 
@@ -300,8 +315,7 @@ class App {
 
   // ─── Bypass Buttons ───
   _setupBypassButtons() {
-    const effectNames = ['noisegate', 'compressor', 'envelopefilter', 'boost', 'overdrive', 'distortion', 'phaser', 'flanger', 'chorus', 'delay', 'reverb', 'eq'];
-    effectNames.forEach(name => {
+    EFFECT_NAMES.forEach(name => {
       const btn = document.getElementById(`${name}-bypass`);
       if (!btn) return;
       btn.setAttribute('aria-pressed', String(btn.classList.contains('active')));
@@ -537,8 +551,7 @@ class App {
   // ─── Presets ───
 
   _setupPedalPresets() {
-    const effectNames = ['noisegate', 'compressor', 'envelopefilter', 'boost', 'overdrive', 'distortion', 'phaser', 'flanger', 'chorus', 'delay', 'reverb', 'eq'];
-    effectNames.forEach(name => {
+    EFFECT_NAMES.forEach(name => {
       const select = document.getElementById(`${name}-preset`);
       const saveBtn = document.getElementById(`${name}-preset-save`);
       if (!select || !saveBtn) return;
@@ -699,6 +712,8 @@ class App {
     this._cabBeforeAutoOff = null;
     this._ampStatus = { amp: null, cab: null };
     this._syncAmpSelects();
+    this._pedalCaptureStatus = {};
+    this._syncPedalCaptures();
 
     // Sync knob visuals
     this._syncKnobsFromPreset(preset);
@@ -724,6 +739,8 @@ class App {
       const fx = this.effects[fxName];
       if (!fx) continue;
       fx.enabled = fxData.enabled;
+      // The capture first, so the knob values below land on its slot too.
+      fx.setCapture(fxData.capture ?? null);
       for (const [param, val] of Object.entries(fxData.params)) {
         fx.setParam(param, val);
       }
@@ -977,7 +994,7 @@ class App {
       });
     }
 
-    this._refreshAmpLibrary();
+    this._refreshLibrary();
   }
 
   /** `lib:<id>` → id, anything else → null. */
@@ -985,15 +1002,20 @@ class App {
     return typeof value === 'string' && value.startsWith('lib:') ? value.slice(4) : null;
   }
 
-  /** Re-read the library and rebuild both pickers. */
-  async _refreshAmpLibrary() {
+  /** Re-read the library and rebuild the amp, cab and pedal pickers. */
+  async _refreshLibrary() {
     try {
-      const entries = [...await this.library.list('amp'), ...await this.library.list('cab')];
+      const entries = [
+        ...await this.library.list('amp'),
+        ...await this.library.list('cab'),
+        ...await this.library.list('pedal'),
+      ];
       this._libraryIndex = new Map(entries.map(e => [e.id, e]));
     } catch (e) {
       console.warn('[App] Could not read the capture library:', e);
     }
     this._renderAmpSelects();
+    this._renderPedalCaptureSelects();
   }
 
   _renderAmpSelects() {
@@ -1041,23 +1063,50 @@ class App {
   _syncAmpSelects() {
     const params = this._currentPreset?.amp?.params;
     if (!params) return;
-    const show = (select, value) => {
-      if (!select) return;
-      // A preset can name a capture that has since been removed.
-      if (![...select.options].some(o => o.value === value)) {
-        const opt = document.createElement('option');
-        opt.value = value;
-        opt.textContent = 'Missing capture';
-        opt.dataset.missing = 'true';
-        select.prepend(opt);
-      }
-      select.value = value;
-      // Drop stale "missing" placeholders that are no longer selected.
-      [...select.querySelectorAll('option[data-missing]')].forEach(o => { if (o.value !== value) o.remove(); });
-    };
-    show(document.getElementById('amp-model'), params.model);
-    show(document.getElementById('amp-cab'), params.cab);
+    this._showSelectValue(document.getElementById('amp-model'), params.model);
+    this._showSelectValue(document.getElementById('amp-cab'), params.cab);
     this._renderAmpInfo();
+  }
+
+  /** An error message ending in a full stop — the NAM engine's do not — so another sentence can follow. */
+  _sentence(text) {
+    const t = String(text ?? '').trim();
+    return /[.!?…]$/.test(t) ? t : `${t}.`;
+  }
+
+  /** Select `value`, adding a "Missing capture" placeholder if it is not in the list. */
+  _showSelectValue(select, value) {
+    if (!select) return;
+    // A preset can name a capture that has since been removed.
+    if (![...select.options].some(o => o.value === value)) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = 'Missing capture';
+      opt.dataset.missing = 'true';
+      select.prepend(opt);
+    }
+    select.value = value;
+    // Drop stale "missing" placeholders that are no longer selected.
+    [...select.querySelectorAll('option[data-missing]')].forEach(o => { if (o.value !== value) o.remove(); });
+  }
+
+  /**
+   * One line describing a library capture and how its load went, for the amp
+   * and pedal info strips: { text, cls } where cls is '', 'warn' or 'error'.
+   */
+  _describeCaptureStatus(id, status) {
+    if (status?.state === 'error') return { text: status.error, cls: 'error' };
+    const entry = this._libraryIndex.get(id) || status?.entry;
+    if (!entry) return { text: 'This capture is no longer in your library.', cls: 'error' };
+    if (status?.state === 'loading' && status.id === id) return { text: `Loading ${entry.name}…`, cls: '' };
+    const detail = describeCapture(entry);
+    let text = detail ? `${entry.name} — ${detail}` : entry.name;
+    let cls = '';
+    if (status?.state === 'ready' && status.id === id && status.rateMismatch) {
+      text += ` · trained at ${(status.rateMismatch / 1000).toFixed(1)}kHz, playing at ${(this.engine.context.sampleRate / 1000).toFixed(1)}kHz — the tone will be slightly off`;
+      cls = 'warn';
+    }
+    return { text, cls };
   }
 
   _renderAmpInfo() {
@@ -1067,20 +1116,7 @@ class App {
     const ampStatus = this._ampStatus.amp;
     const cabStatus = this._ampStatus.cab;
 
-    const describe = (id, status) => {
-      if (status?.state === 'error') return { text: status.error, cls: 'error' };
-      const entry = this._libraryIndex.get(id) || status?.entry;
-      if (!entry) return { text: 'This capture is no longer in your library.', cls: 'error' };
-      if (status?.state === 'loading' && status.id === id) return { text: `Loading ${entry.name}…`, cls: '' };
-      const detail = describeCapture(entry);
-      let text = detail ? `${entry.name} — ${detail}` : entry.name;
-      let cls = '';
-      if (status?.state === 'ready' && status.id === id && status.rateMismatch) {
-        text += ` · trained at ${(status.rateMismatch / 1000).toFixed(1)}kHz, playing at ${(this.engine.context.sampleRate / 1000).toFixed(1)}kHz — the tone will be slightly off`;
-        cls = 'warn';
-      }
-      return { text, cls };
-    };
+    const describe = (id, status) => this._describeCaptureStatus(id, status);
 
     // Amp: the bar shows for a capture, and for an error that fell back to built-in.
     const bar = document.getElementById('amp-capture-bar');
@@ -1089,7 +1125,7 @@ class App {
     const ampError = ampStatus?.state === 'error' ? ampStatus : null;
     if (bar && info) {
       bar.hidden = !ampId && !ampError;
-      const d = ampId ? describe(ampId, ampStatus) : ampError ? { text: `${ampError.error} Using the built-in amp.`, cls: 'error' } : { text: '', cls: '' };
+      const d = ampId ? describe(ampId, ampStatus) : ampError ? { text: `${this._sentence(ampError.error)} Using the built-in amp.`, cls: 'error' } : { text: '', cls: '' };
       info.textContent = d.text;
       info.className = `amp-capture-info ${d.cls}`.trim();
     }
@@ -1103,7 +1139,7 @@ class App {
     const cabInfo = document.getElementById('cab-info');
     const cabError = cabStatus?.state === 'error' ? cabStatus : null;
     if (cabInfo) {
-      const d = cabId ? describe(cabId, cabStatus) : cabError ? { text: `${cabError.error} Using the built-in 4x12.`, cls: 'error' } : { text: '', cls: '' };
+      const d = cabId ? describe(cabId, cabStatus) : cabError ? { text: `${this._sentence(cabError.error)} Using the built-in 4x12.`, cls: 'error' } : { text: '', cls: '' };
       cabInfo.textContent = d.text;
       cabInfo.className = `amp-capture-info amp-cab-info ${d.cls}`.trim();
     }
@@ -1164,9 +1200,10 @@ class App {
   /**
    * Add a .nam capture or an IR to the library and select it.
    * @param {File} file
-   * @param {'amp'|'cab'} slot
+   * @param {'amp'|'cab'|'pedal'} slot
+   * @param {string} [pedalName] - the pedal to load it into, for the pedal slot
    */
-  async _importCapture(file, slot) {
+  async _importCapture(file, slot, pedalName) {
     let entry;
     try {
       entry = await this.library.importFile(file, slot);
@@ -1175,10 +1212,11 @@ class App {
       alert(e.message || `Could not load "${file.name}".`);
       return;
     }
-    await this._refreshAmpLibrary();
+    await this._refreshLibrary();
     if (slot === 'amp') this._chooseModel(`lib:${entry.id}`);
-    else this._chooseCab(`lib:${entry.id}`);
-    console.log(`[App] Loaded ${entry.kind === 'nam' ? 'NAM capture' : 'IR'} "${entry.name}" into the ${slot} slot`);
+    else if (slot === 'cab') this._chooseCab(`lib:${entry.id}`);
+    else this._choosePedalCapture(pedalName, `lib:${entry.id}`);
+    console.log(`[App] Loaded ${entry.kind === 'nam' ? 'NAM capture' : 'IR'} "${entry.name}" into the ${pedalName || slot} slot`);
     return entry;
   }
 
@@ -1195,7 +1233,7 @@ class App {
       alert(`Could not remove "${entry.name}".`);
       return;
     }
-    await this._refreshAmpLibrary();
+    await this._refreshLibrary();
     if (slot === 'amp') this._chooseModel(DEFAULT_VOICE);
     else this._chooseCab(this._cabBeforeAutoOff ?? DEFAULT_CAB);
   }
@@ -1209,6 +1247,185 @@ class App {
       if (status.slot === 'amp') this._applyCabRule(false);
     }
     this._syncAmpSelects();
+  }
+
+  // ─── Pedals: NAM captures ───
+
+  /**
+   * Give every pedal a capture row — a picker, a load button, a remove button
+   * and a status line — just above its footswitch. Built here rather than in
+   * the markup so twelve copies of it do not have to be kept in step. Like the
+   * amp pickers it runs before any AudioContext: the choice goes into the
+   * preset and _applyCurrentPresetToAudio() replays it once audio starts.
+   */
+  _setupPedalCaptures() {
+    const folder = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>';
+    EFFECT_NAMES.forEach(name => {
+      const bypass = document.getElementById(`${name}-bypass`);
+      const pedal = bypass?.closest('.pedal');
+      if (!pedal) return;
+      pedal.dataset.effect = name;
+      const label = pedal.querySelector('.pedal-name')?.textContent.trim() || name;
+      const hint = EFFECT_CLASSES[name].captureMode === 'replace'
+        ? 'A NAM capture replaces this pedal’s circuit'
+        : 'A NAM capture runs in front of this effect, as a colour stage';
+
+      const row = document.createElement('div');
+      row.className = 'pedal-capture';
+      row.innerHTML = `
+        <select id="${name}-capture" class="pedal-capture-select" aria-label="${label} circuit" title="${hint}">
+          <option value="">Built-in</option>
+        </select>
+        <button id="${name}-capture-load" class="pedal-capture-btn" type="button"
+          title="Load a NAM capture (.nam) into this pedal — or drop one on it"
+          aria-label="Load a NAM capture into ${label}">${folder}</button>
+        <button id="${name}-capture-remove" class="pedal-capture-btn pedal-capture-remove" type="button"
+          title="Remove this capture from your library" aria-label="Remove this capture from your library" hidden>×</button>`;
+      const info = document.createElement('p');
+      info.id = `${name}-capture-info`;
+      info.className = 'pedal-capture-info';
+      info.setAttribute('role', 'status');
+      info.hidden = true;
+      pedal.insertBefore(row, bypass);
+      pedal.insertBefore(info, bypass);
+
+      row.querySelector('select').addEventListener('change', (e) => this._choosePedalCapture(name, e.target.value));
+      row.querySelector(`#${name}-capture-load`).addEventListener('click', () => this._pickPedalCaptureFile(name));
+      row.querySelector(`#${name}-capture-remove`).addEventListener('click', () => this._removePedalCapture(name));
+
+      // Drop a .nam straight onto the pedal.
+      const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+      ['dragenter', 'dragover'].forEach(ev => pedal.addEventListener(ev, (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        pedal.classList.add('dragging');
+      }));
+      ['dragleave', 'dragend'].forEach(ev => pedal.addEventListener(ev, (e) => {
+        if (ev === 'dragleave' && pedal.contains(e.relatedTarget)) return;
+        pedal.classList.remove('dragging');
+      }));
+      pedal.addEventListener('drop', (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        pedal.classList.remove('dragging');
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+        if (!/\.nam$/i.test(file.name)) {
+          alert(`Drop a NAM capture (.nam) on a pedal — "${file.name}" is not one.`);
+          return;
+        }
+        this._importCapture(file, 'pedal', name);
+      });
+    });
+  }
+
+  /** Rebuild every pedal's capture picker from the library. */
+  _renderPedalCaptureSelects() {
+    const entries = [...this._libraryIndex.values()].filter(e => e.slot === 'pedal');
+    EFFECT_NAMES.forEach(name => {
+      const select = document.getElementById(`${name}-capture`);
+      if (!select) return;
+      select.innerHTML = '<option value="">Built-in</option>';
+      if (entries.length) {
+        const group = document.createElement('optgroup');
+        group.label = 'NAM captures';
+        entries.forEach(e => {
+          const opt = document.createElement('option');
+          opt.value = `lib:${e.id}`;
+          opt.textContent = e.name;
+          group.appendChild(opt);
+        });
+        select.appendChild(group);
+      }
+    });
+    this._syncPedalCaptures();
+  }
+
+  /** Point each pedal's picker, badge, dimmed knobs and status line at the current preset. */
+  _syncPedalCaptures() {
+    EFFECT_NAMES.forEach(name => {
+      const select = document.getElementById(`${name}-capture`);
+      if (!select) return;
+      const value = this._currentPreset?.effects?.[name]?.capture || '';
+      const id = this._libraryId(value);
+      const status = this._pedalCaptureStatus[name];
+      this._showSelectValue(select, value);
+
+      const pedal = select.closest('.pedal');
+      pedal?.classList.toggle('has-capture', !!value);
+      for (const param of EFFECT_CLASSES[name].captureInactiveParams) {
+        const knob = document.getElementById(`${name}-${param}`);
+        knob?.closest('.knob-wrapper')?.classList.toggle('inactive', !!value);
+        if (knob) knob.setAttribute('aria-disabled', String(!!value));
+      }
+
+      const remove = document.getElementById(`${name}-capture-remove`);
+      if (remove) remove.hidden = !(id && this._libraryIndex.has(id));
+
+      const info = document.getElementById(`${name}-capture-info`);
+      if (!info) return;
+      const d = id
+        ? this._describeCaptureStatus(id, status)
+        : status?.state === 'error'
+          ? { text: `${this._sentence(status.error)} Using the built-in circuit.`, cls: 'error' }
+          : null;
+      info.hidden = !d;
+      info.textContent = d?.text || '';
+      info.title = d?.text || '';
+      info.className = `pedal-capture-info ${d?.cls || ''}`.trim();
+    });
+  }
+
+  /** '' for the built-in circuit, `lib:<id>` for a capture. */
+  _choosePedalCapture(name, value) {
+    const fxData = this._currentPreset?.effects?.[name];
+    if (fxData) {
+      if (value) fxData.capture = value;
+      else delete fxData.capture;
+    }
+    this._pedalCaptureStatus[name] = null;
+    if (this._audioInitialized) this.effects[name]?.setCapture(value || null);
+    this._syncPedalCaptures();
+  }
+
+  _pickPedalCaptureFile(name) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.nam';
+    input.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) this._importCapture(file, 'pedal', name);
+    });
+    input.click();
+  }
+
+  async _removePedalCapture(name) {
+    const value = this._currentPreset?.effects?.[name]?.capture;
+    const id = this._libraryId(value);
+    const entry = id && this._libraryIndex.get(id);
+    if (!entry) return;
+    if (!confirm(`Remove "${entry.name}" from your library?\n\nPedals and presets that use it will fall back to their built-in circuit.`)) return;
+    try {
+      await this.library.remove(id);
+    } catch (e) {
+      console.error('[App] Could not remove capture:', e);
+      alert(`Could not remove "${entry.name}".`);
+      return;
+    }
+    await this._refreshLibrary();
+    EFFECT_NAMES.forEach(n => {
+      if (this._currentPreset?.effects?.[n]?.capture === value) this._choosePedalCapture(n, '');
+    });
+  }
+
+  /** Load reports from a pedal's capture slot. On failure it has already fallen back; mirror that here. */
+  _onPedalCaptureStatus(name, status) {
+    this._pedalCaptureStatus[name] = status;
+    if (status.state === 'error') {
+      const fxData = this._currentPreset?.effects?.[name];
+      if (fxData?.capture === `lib:${status.id}`) delete fxData.capture;
+    }
+    this._syncPedalCaptures();
   }
 
   // ─── Test Bench ───
@@ -1298,6 +1515,7 @@ class App {
       this.engine.setBypassAll(active);
       document.querySelector('.pedalboard')?.classList.toggle('bypassed', active);
       document.querySelector('.amp-section')?.classList.toggle('bypassed', active);
+      document.querySelector('.fx-loop')?.classList.toggle('bypassed', active);
     });
   }
 

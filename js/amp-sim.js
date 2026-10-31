@@ -15,67 +15,12 @@
  * are strings, and `lib:<id>` values refer to entries in the CaptureLibrary.
  */
 import { AMP_VOICES, CAB_MODELS, DEFAULT_VOICE, DEFAULT_CAB, renderCabIR, normalizeIR } from './amp-models.js';
-
-// The NAM plugin normalizes captures to this output loudness, in dB.
-const NAM_TARGET_LOUDNESS = -18;
-
-// Crossfade time constant, and how long to wait before disconnecting the
-// branch that faded out (several time constants).
-const FADE_TC = 0.008;
-const SETTLE_MS = 80;
+import { BranchSwitch, createStageNode, dbToGain } from './audio-nodes.js';
+import { loadNamEngine, loudnessGain, rateMismatch, entryMeta } from './capture-slot.js';
 
 // The NAM path's tone controls sit at the NAM plugin's own tone-stack corners.
 const NAM_EQ = { bass: 150, mid: 425, midQ: 0.7, treble: 1800, range: 10 };
 const PRESENCE = { freq: 3500, range: 8 };
-
-const dbToGain = (db) => Math.pow(10, db / 20);
-
-/**
- * Routes one source into exactly one of several named branches, crossfading
- * their outputs so a switch never clicks. Branches that have faded out are
- * disconnected from the source, so an idle NAM node renders nothing.
- */
-class BranchSwitch {
-  constructor(context, source, destination) {
-    this.context = context;
-    this.source = source;
-    this.destination = destination;
-    this.branches = new Map();
-    this.connected = new Set();
-    this.active = null;
-    this._timer = null;
-  }
-
-  add(name, input, output) {
-    const fade = this.context.createGain();
-    fade.gain.value = 0;
-    output.connect(fade);
-    fade.connect(this.destination);
-    this.branches.set(name, { input, fade });
-  }
-
-  select(name) {
-    const branch = this.branches.get(name);
-    if (!branch) return;
-    if (!this.connected.has(name)) {
-      this.source.connect(branch.input);
-      this.connected.add(name);
-    }
-    const t = this.context.currentTime;
-    for (const [n, b] of this.branches) b.fade.gain.setTargetAtTime(n === name ? 1 : 0, t, FADE_TC);
-    this.active = name;
-    clearTimeout(this._timer);
-    this._timer = setTimeout(() => this._prune(), SETTLE_MS);
-  }
-
-  _prune() {
-    for (const name of [...this.connected]) {
-      if (name === this.active) continue;
-      try { this.source.disconnect(this.branches.get(name).input); } catch (e) { /* already gone */ }
-      this.connected.delete(name);
-    }
-  }
-}
 
 export class AmpSim {
   /**
@@ -112,7 +57,6 @@ export class AmpSim {
     this._cabToken = 0;
     this._voice = AMP_VOICES[DEFAULT_VOICE];
     this._cabIRCache = new Map();
-    this._namEngine = null;
     this._namNodes = { amp: null, cab: null };
 
     // These are knob positions in 0–1, so the tone controls sit at noon.
@@ -138,73 +82,17 @@ export class AmpSim {
     return f;
   }
 
-  /**
-   * A tube-stage-processor instance, or — if worklets are unavailable — a
-   * single oversampled WaveShaper standing in for the whole stage list.
-   * Both expose { node, setDrive(v), configure(stages) }.
-   */
-  _createStages(stages) {
-    try {
-      const node = new AudioWorkletNode(this.context, 'tube-stage-processor', {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [1],
-        channelCount: 1,
-        channelCountMode: 'explicit',
-        processorOptions: { stages },
-      });
-      const drive = node.parameters.get('drive');
-      return {
-        node,
-        setDrive: (v) => drive.setValueAtTime(v, this.context.currentTime),
-        configure: (next) => node.port.postMessage({ type: 'config', stages: next }),
-      };
-    } catch (e) {
-      console.warn('[AmpSim] tube-stage-processor unavailable, using a WaveShaper stand-in:', e);
-      return this._createFallbackStages(stages);
-    }
-  }
-
-  _createFallbackStages(stages) {
-    const pre = this.context.createGain();
-    const shaper = this.context.createWaveShaper();
-    shaper.oversample = '4x';
-    pre.connect(shaper);
-    const node = { connect: (...a) => shaper.connect(...a), disconnect: (...a) => shaper.disconnect(...a) };
-    let current = stages;
-    let driveValue = 0.5;
-    // The curve covers the largest total gain; the GainNode scales into it.
-    const maxGain = () => current.reduce((g, s) => g * (Array.isArray(s.gain) ? s.gain[1] : s.gain ?? 1), 1);
-    const totalGain = (v) => current.reduce((g, s) => {
-      const [lo, hi] = Array.isArray(s.gain) ? s.gain : [s.gain ?? 1, s.gain ?? 1];
-      return g * lo * Math.pow(hi / lo, v);
-    }, 1);
-    const rebuild = () => {
-      const max = maxGain(), n = 4096, curve = new Float32Array(n);
-      for (let i = 0; i < n; i++) curve[i] = Math.tanh(((i * 2) / (n - 1) - 1) * max);
-      shaper.curve = curve;
-      pre.gain.setTargetAtTime(totalGain(driveValue) / max, this.context.currentTime, 0.01);
-    };
-    rebuild();
-    return {
-      node,
-      input: pre,
-      setDrive: (v) => { driveValue = v; pre.gain.setTargetAtTime(totalGain(v) / maxGain(), this.context.currentTime, 0.01); },
-      configure: (next) => { current = next; rebuild(); },
-    };
-  }
-
   _buildBuiltinPath() {
     const v = AMP_VOICES[DEFAULT_VOICE];
     const bi = {};
     bi.tight = this._filter('highpass', v.tight);
     bi.hump = this._filter('peaking', 800, 0.7, 0);
     bi.bright = this._filter('highshelf', v.bright.freq);
-    bi.pre = this._createStages(v.pre);
+    bi.pre = createStageNode(this.context, v.pre);
     bi.bass = this._filter('lowshelf', v.stack.bass);
     bi.mid = this._filter('peaking', v.stack.mid, v.stack.midQ);
     bi.treble = this._filter('highshelf', v.stack.treble);
-    bi.power = this._createStages([v.power]);
+    bi.power = createStageNode(this.context, [v.power]);
     bi.depth = this._filter('peaking', v.depth.freq, v.depth.q, v.depth.gain);
     bi.presence = this._filter('highshelf', PRESENCE.freq);
     bi.makeup = this.context.createGain();
@@ -382,9 +270,9 @@ export class AmpSim {
       if (token !== this._ampToken) return;
       const info = await node.loadModel(entry.data);
       if (token !== this._ampToken) return;
-      this._nam.loudness.gain.setTargetAtTime(this._loudnessGain(info), this.context.currentTime, 0.01);
+      this._nam.loudness.gain.setTargetAtTime(loudnessGain(info), this.context.currentTime, 0.01);
       this._paths.select('nam');
-      this._status('amp', { state: 'ready', id, entry: this._entryMeta(entry), info, rateMismatch: this._rateMismatch(info) });
+      this._status('amp', { state: 'ready', id, entry: entryMeta(entry), info, rateMismatch: rateMismatch(info, this.context.sampleRate) });
     } catch (err) {
       if (token !== this._ampToken) return;
       console.error('[AmpSim] Could not load NAM capture:', err);
@@ -459,15 +347,15 @@ export class AmpSim {
         const buffer = await this._decodeLibraryIR(entry);
         if (token !== this._cabToken) return;
         this._useIR(buffer);
-        this._status('cab', { state: 'ready', id, entry: this._entryMeta(entry) });
+        this._status('cab', { state: 'ready', id, entry: entryMeta(entry) });
       } else {
         const node = await this._ensureNamNode('cab');
         if (token !== this._cabToken) return;
         const info = await node.loadModel(entry.data);
         if (token !== this._cabToken) return;
-        this._cabNamLoudness.gain.setTargetAtTime(this._loudnessGain(info), this.context.currentTime, 0.01);
+        this._cabNamLoudness.gain.setTargetAtTime(loudnessGain(info), this.context.currentTime, 0.01);
         this._cab.select('nam');
-        this._status('cab', { state: 'ready', id, entry: this._entryMeta(entry), info, rateMismatch: this._rateMismatch(info) });
+        this._status('cab', { state: 'ready', id, entry: entryMeta(entry), info, rateMismatch: rateMismatch(info, this.context.sampleRate) });
       }
     } catch (err) {
       if (token !== this._cabToken) return;
@@ -484,11 +372,7 @@ export class AmpSim {
   _ensureNamNode(slot) {
     if (!this._namNodes[slot]) {
       this._namNodes[slot] = (async () => {
-        if (!this._namEngine) {
-          this._namEngine = import('../vendor/nam/index.js').then(m => m.NamEngine.attach(this.context));
-          this._namEngine.catch(() => { this._namEngine = null; });
-        }
-        const engine = await this._namEngine;
+        const engine = await loadNamEngine(this.context);
         const node = await engine.createNode();
         if (slot === 'amp') {
           this._nam.drive.connect(node);
@@ -503,22 +387,5 @@ export class AmpSim {
       this._namNodes[slot].catch(() => { this._namNodes[slot] = null; });
     }
     return this._namNodes[slot];
-  }
-
-  _loudnessGain(info) {
-    return info?.hasLoudness && Number.isFinite(info.loudness)
-      ? dbToGain(NAM_TARGET_LOUDNESS - info.loudness)
-      : 1;
-  }
-
-  _rateMismatch(info) {
-    const expected = info?.expectedSampleRate;
-    return expected > 0 && Math.abs(expected - this.context.sampleRate) > 1 ? expected : null;
-  }
-
-  /** Library entry without its payload, for status reports. */
-  _entryMeta(entry) {
-    const { data, ...meta } = entry;
-    return meta;
   }
 }
