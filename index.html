@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Guitar Shop — Browser-based guitar effects pedal and amp emulator. Real-time audio processing with Web Audio API.">
   <title>Guitar Shop — Effects Pedal & Amp Emulator</title>
+  <!-- Fonts are linked here rather than @import-ed from the stylesheet: the app
+       is served with Cross-Origin-Embedder-Policy: require-corp so that
+       SharedArrayBuffer is available, and under that policy a no-CORS subresource
+       request is blocked outright. A <link> with crossorigin makes it a CORS
+       request, which Google Fonts allows. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Instrument+Serif:ital@0;1&family=Oswald:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -16,13 +24,24 @@
       <span class="tagline">Effects &amp; Amp Emulator</span>
     </div>
     <div class="header-controls">
+      <div class="bridge-status">
+        <div id="bridge-dot" class="status-dot"></div>
+        <span id="bridge-text" class="status-text">Checking bridge…</span>
+      </div>
       <div class="device-selector">
         <label for="device-select">Input</label>
         <select id="device-select">
           <option value="">— Select audio input —</option>
         </select>
       </div>
-      <button id="tuner-btn" class="btn btn-tuner">🎵 Tuner</button>
+      <div class="device-selector" id="channel-group" hidden>
+        <label for="channel-select">Channel</label>
+        <select id="channel-select">
+          <option value="0">Channel 1</option>
+          <option value="1">Channel 2</option>
+        </select>
+      </div>
+      <button id="tuner-btn" class="btn btn-tuner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 12 7 12 9 6 13 18 15 12 22 12"/></svg> Tuner</button>
       <button id="start-btn" class="btn btn-primary">▶ START</button>
       <div class="status-indicator">
         <div id="status-dot" class="status-dot"></div>
@@ -50,8 +69,8 @@
     <div class="preset-bar">
       <label for="preset-select">Preset</label>
       <select id="preset-select"></select>
-      <button id="preset-save" class="btn">💾 Save</button>
-      <button id="preset-delete" class="btn">🗑 Delete</button>
+      <button id="preset-save" class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save</button>
+      <button id="preset-delete" class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Delete</button>
     </div>
 
     <!-- Master Controls -->
@@ -72,15 +91,51 @@
       </div>
     </div>
 
+    <!-- ═══ TEST BENCH ═══ -->
+    <section class="test-bench" id="test-bench">
+      <div class="test-bench-header">
+        <span class="section-title">Test Bench</span>
+        <span class="test-bench-sub">No guitar handy? Push a signal through the chain.</span>
+        <button id="bypass-all" class="btn btn-bypass" title="Bypass every pedal and the amp, for an A/B against the raw signal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h5l3-7 3 14 2-7h3"/></svg> A/B Bypass All</button>
+      </div>
+
+      <div class="test-bench-row">
+        <label for="test-source">Source</label>
+        <select id="test-source"></select>
+        <button id="test-play" class="btn btn-primary">▶ PLAY</button>
+        <button id="test-loop" class="btn btn-toggle active" aria-pressed="true">⟳ Loop</button>
+        <div class="test-level">
+          <label for="test-level">Level</label>
+          <input type="range" id="test-level" min="0" max="100" value="35">
+          <span id="test-level-value" class="test-level-value">35</span>
+        </div>
+        <button id="test-load-file" class="ir-btn test-file-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> <span id="test-file-label">Load audio file…</span></button>
+      </div>
+
+      <div class="test-bench-footer">
+        <div class="test-progress">
+          <div id="test-progress-fill" class="test-progress-fill"></div>
+        </div>
+        <span id="test-time" class="test-time">0:00 / 0:00</span>
+      </div>
+
+      <p id="test-hint" class="test-hint"></p>
+      <div class="test-drop-hint">Drop an audio file to load it</div>
+    </section>
+
     <!-- ═══ PEDALBOARD ═══ -->
     <section class="pedalboard">
       <h2 class="section-title">Pedalboard</h2>
       <div class="pedals-grid">
 
         <!-- Noise Gate -->
-        <div class="pedal">
+        <div class="pedal pedal--dynamics">
           <div class="pedal-header">
             <span class="pedal-name">Gate</span>
+            <div class="pedal-preset-controls">
+              <select id="noisegate-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="noisegate-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
             <div id="noisegate-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -92,13 +147,17 @@
               <span class="knob-value">3</span>
             </div>
           </div>
-          <button id="noisegate-bypass" class="bypass-btn">Bypass</button>
+          <button id="noisegate-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- Compressor -->
-        <div class="pedal">
+        <div class="pedal pedal--dynamics">
           <div class="pedal-header">
             <span class="pedal-name">Compressor</span>
+            <div class="pedal-preset-controls">
+              <select id="compressor-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="compressor-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
             <div id="compressor-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -117,13 +176,82 @@
               <span class="knob-value">3</span>
             </div>
           </div>
-          <button id="compressor-bypass" class="bypass-btn">Bypass</button>
+          <button id="compressor-bypass" class="bypass-btn">On/Off</button>
         </div>
 
+
+        <!-- Envelope Filter -->
+        <div class="pedal pedal--filter">
+          <div class="pedal-header">
+            <span class="pedal-name">Envelope Filter</span>
+            <div class="pedal-preset-controls">
+              <select id="envelopefilter-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="envelopefilter-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
+            <div id="envelopefilter-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="envelopefilter-sensitivity" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Sens</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="envelopefilter-q" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Q</span>
+              <span class="knob-value">3</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="envelopefilter-mix" class="knob" data-value="1.0">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">10</span>
+            </div>
+          </div>
+          <button id="envelopefilter-bypass" class="bypass-btn">On/Off</button>
+        </div>
+
+        <!-- Boost -->
+        <div class="pedal pedal--drive-low">
+          <div class="pedal-header">
+            <span class="pedal-name">Boost</span>
+            <div class="pedal-preset-controls">
+              <select id="boost-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="boost-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
+            <div id="boost-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="boost-gain" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Gain</span>
+              <span class="knob-value">3</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="boost-tone" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Tone</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="boost-bypass" class="bypass-btn">On/Off</button>
+        </div>
         <!-- Overdrive -->
-        <div class="pedal">
+        <div class="pedal pedal--drive-mid">
           <div class="pedal-header">
             <span class="pedal-name">Overdrive</span>
+            <div class="pedal-preset-controls">
+              <select id="overdrive-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="overdrive-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
             <div id="overdrive-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -149,13 +277,17 @@
               <span class="knob-value">7</span>
             </div>
           </div>
-          <button id="overdrive-bypass" class="bypass-btn">Bypass</button>
+          <button id="overdrive-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- Distortion -->
-        <div class="pedal">
+        <div class="pedal pedal--drive-hi">
           <div class="pedal-header">
             <span class="pedal-name">Distortion</span>
+            <div class="pedal-preset-controls">
+              <select id="distortion-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="distortion-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
             <div id="distortion-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -181,13 +313,103 @@
               <span class="knob-value">6</span>
             </div>
           </div>
-          <button id="distortion-bypass" class="bypass-btn">Bypass</button>
+          <button id="distortion-bypass" class="bypass-btn">On/Off</button>
         </div>
 
+
+        <!-- Phaser -->
+        <div class="pedal pedal--mod">
+          <div class="pedal-header">
+            <span class="pedal-name">Phaser</span>
+            <div class="pedal-preset-controls">
+              <select id="phaser-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="phaser-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
+            <div id="phaser-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="phaser-rate" class="knob" data-value="0.15">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Rate</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="phaser-depth" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Depth</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="phaser-feedback" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="phaser-mix" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="phaser-bypass" class="bypass-btn">On/Off</button>
+        </div>
+
+        <!-- Flanger -->
+        <div class="pedal pedal--mod">
+          <div class="pedal-header">
+            <span class="pedal-name">Flanger</span>
+            <div class="pedal-preset-controls">
+              <select id="flanger-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="flanger-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
+            <div id="flanger-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="flanger-rate" class="knob" data-value="0.2">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Rate</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="flanger-depth" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Depth</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="flanger-feedback" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-value">5</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="flanger-mix" class="knob" data-value="0.5">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">5</span>
+            </div>
+          </div>
+          <button id="flanger-bypass" class="bypass-btn">On/Off</button>
+        </div>
         <!-- Chorus -->
-        <div class="pedal">
+        <div class="pedal pedal--mod">
           <div class="pedal-header">
             <span class="pedal-name">Chorus</span>
+            <div class="pedal-preset-controls">
+              <select id="chorus-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="chorus-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
             <div id="chorus-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -213,71 +435,17 @@
               <span class="knob-value">5</span>
             </div>
           </div>
-          <button id="chorus-bypass" class="bypass-btn">Bypass</button>
-        </div>
-
-        <!-- Delay -->
-        <div class="pedal">
-          <div class="pedal-header">
-            <span class="pedal-name">Delay</span>
-            <div id="delay-led" class="pedal-led"></div>
-          </div>
-          <div class="pedal-knobs">
-            <div class="knob-wrapper">
-              <div id="delay-time" class="knob" data-value="0.2">
-                <div class="knob-indicator"></div>
-              </div>
-              <span class="knob-label">Time</span>
-              <span class="knob-value">2</span>
-            </div>
-            <div class="knob-wrapper">
-              <div id="delay-feedback" class="knob" data-value="0.4">
-                <div class="knob-indicator"></div>
-              </div>
-              <span class="knob-label">Feedback</span>
-              <span class="knob-value">4</span>
-            </div>
-            <div class="knob-wrapper">
-              <div id="delay-mix" class="knob" data-value="0.3">
-                <div class="knob-indicator"></div>
-              </div>
-              <span class="knob-label">Mix</span>
-              <span class="knob-value">3</span>
-            </div>
-          </div>
-          <button id="delay-bypass" class="bypass-btn">Bypass</button>
-        </div>
-
-        <!-- Reverb -->
-        <div class="pedal">
-          <div class="pedal-header">
-            <span class="pedal-name">Reverb</span>
-            <div id="reverb-led" class="pedal-led"></div>
-          </div>
-          <div class="pedal-knobs">
-            <div class="knob-wrapper">
-              <div id="reverb-decay" class="knob" data-value="0.3">
-                <div class="knob-indicator"></div>
-              </div>
-              <span class="knob-label">Decay</span>
-              <span class="knob-value">3</span>
-            </div>
-            <div class="knob-wrapper">
-              <div id="reverb-mix" class="knob" data-value="0.3">
-                <div class="knob-indicator"></div>
-              </div>
-              <span class="knob-label">Mix</span>
-              <span class="knob-value">3</span>
-            </div>
-          </div>
-          <button id="reverb-bypass" class="bypass-btn">Bypass</button>
-          <button id="reverb-load-ir" class="ir-btn">📂 Load IR File</button>
+          <button id="chorus-bypass" class="bypass-btn">On/Off</button>
         </div>
 
         <!-- EQ -->
-        <div class="pedal">
+        <div class="pedal pedal--eq">
           <div class="pedal-header">
             <span class="pedal-name">EQ</span>
+            <div class="pedal-preset-controls">
+              <select id="eq-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="eq-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
             <div id="eq-led" class="pedal-led"></div>
           </div>
           <div class="pedal-knobs">
@@ -303,7 +471,7 @@
               <span class="knob-value">5</span>
             </div>
           </div>
-          <button id="eq-bypass" class="bypass-btn">Bypass</button>
+          <button id="eq-bypass" class="bypass-btn">On/Off</button>
         </div>
 
       </div>
@@ -312,17 +480,27 @@
     <!-- ═══ AMP ═══ -->
     <section class="amp-section">
       <h2 class="section-title">Amplifier</h2>
-      <div class="amp-panel">
+      <div class="amp-panel" id="amp-panel">
         <div class="amp-header">
           <span class="amp-title">Amplifier</span>
           <div class="amp-model-selector">
             <label for="amp-model">Model</label>
+            <!-- Options are built at runtime: the built-in voices plus any NAM
+                 captures in the library. -->
             <select id="amp-model">
-              <option value="clean">Clean</option>
-              <option value="crunch">Crunch</option>
-              <option value="highgain">High Gain</option>
+              <option value="clean">Clean — blackface</option>
+              <option value="crunch">Crunch — plexi</option>
+              <option value="highgain">High Gain — modern</option>
             </select>
+            <button id="amp-load-nam" class="amp-btn" title="Load a Neural Amp Modeler capture (.nam) — or drop one on the amp">Load .nam…</button>
+            <button id="amp-remove" class="amp-btn amp-btn-icon" title="Remove this capture from your library" aria-label="Remove this capture from your library" hidden>×</button>
           </div>
+        </div>
+        <div id="amp-capture-bar" class="amp-capture-bar" hidden>
+          <span id="amp-capture-info" class="amp-capture-info" role="status"></span>
+          <label class="amp-capture-toggle" title="Captures recorded through a mic'd speaker already include the cabinet">
+            <input type="checkbox" id="amp-capture-cab"> Includes cab
+          </label>
         </div>
         <div class="amp-knobs">
           <div class="amp-knob-wrapper">
@@ -368,10 +546,96 @@
             <span class="knob-value">7</span>
           </div>
         </div>
-        <div class="amp-cab-section">
-          <span class="knob-label">Cabinet IR</span>
-          <button id="cab-load-ir" class="ir-btn" style="width: auto; margin-top: 0; padding: 6px 16px;">📂 Load Cabinet IR</button>
+        <div class="amp-cab-section" id="amp-cab-section">
+          <label for="amp-cab" class="knob-label">Cabinet</label>
+          <!-- Built-in cabs, loaded IRs and NAM cab captures; built at runtime. -->
+          <select id="amp-cab">
+            <option value="4x12">4x12 Closed — V30</option>
+            <option value="2x12">2x12 Open — alnico blue</option>
+            <option value="1x12">1x12 Open — jensen</option>
+            <option value="off">Off</option>
+          </select>
+          <button id="cab-load" class="ir-btn amp-cab-btn" title="Load a cabinet impulse response (.wav) or NAM capture (.nam) — or drop one here"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Load IR / .nam…</button>
+          <button id="cab-remove" class="ir-btn amp-cab-btn amp-btn-icon" title="Remove this cabinet from your library" aria-label="Remove this cabinet from your library" hidden>×</button>
+          <span id="cab-info" class="amp-capture-info amp-cab-info" role="status"></span>
         </div>
+        <div class="amp-drop-hint">Drop a .nam capture or a cabinet IR</div>
+      </div>
+    </section>
+
+    <!-- ═══ FX LOOP ═══ -->
+    <!-- Time effects run after the amp, as in a real amp's effects loop: in
+         front of a driven amp their repeats and tails get distorted. -->
+    <section class="pedalboard fx-loop">
+      <h2 class="section-title">FX Loop <span class="section-sub">after the amp</span></h2>
+      <div class="pedals-grid">
+
+        <!-- Delay -->
+        <div class="pedal pedal--time">
+          <div class="pedal-header">
+            <span class="pedal-name">Delay</span>
+            <div class="pedal-preset-controls">
+              <select id="delay-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="delay-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
+            <div id="delay-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="delay-time" class="knob" data-value="0.2">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Time</span>
+              <span class="knob-value">2</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="delay-feedback" class="knob" data-value="0.4">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Feedback</span>
+              <span class="knob-value">4</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="delay-mix" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">3</span>
+            </div>
+          </div>
+          <button id="delay-bypass" class="bypass-btn">On/Off</button>
+        </div>
+
+        <!-- Reverb -->
+        <div class="pedal pedal--time">
+          <div class="pedal-header">
+            <span class="pedal-name">Reverb</span>
+            <div class="pedal-preset-controls">
+              <select id="reverb-preset" class="pedal-preset-select"><option value="">Preset</option></select>
+              <button id="reverb-preset-save" class="pedal-preset-save" title="Save Preset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+            </div>
+            <div id="reverb-led" class="pedal-led"></div>
+          </div>
+          <div class="pedal-knobs">
+            <div class="knob-wrapper">
+              <div id="reverb-decay" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Decay</span>
+              <span class="knob-value">3</span>
+            </div>
+            <div class="knob-wrapper">
+              <div id="reverb-mix" class="knob" data-value="0.3">
+                <div class="knob-indicator"></div>
+              </div>
+              <span class="knob-label">Mix</span>
+              <span class="knob-value">3</span>
+            </div>
+          </div>
+          <button id="reverb-bypass" class="bypass-btn">On/Off</button>
+          <button id="reverb-load-ir" class="ir-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> Load IR File</button>
+        </div>
+
       </div>
     </section>
 
@@ -395,7 +659,7 @@
   </main>
 
   <footer class="footer">
-    <p>Guitar Shop — Built with Web Audio API</p>
+    <p>Guitar Shop — Built with Core Audio</p>
   </footer>
 
   <script type="module" src="js/app.js"></script>
